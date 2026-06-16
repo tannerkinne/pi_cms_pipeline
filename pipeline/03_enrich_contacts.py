@@ -15,7 +15,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import apollo_client
+from api_wrappers import apollo_client
 from utils import DATA_DIR, read_csv_rows, append_csv_row, already_processed_keys, CallCounter
 
 INPUT_PATH = os.path.join(DATA_DIR, "firms_raw.csv")

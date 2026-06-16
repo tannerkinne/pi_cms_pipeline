@@ -16,7 +16,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import apollo_client
+from api_wrappers import apollo_client
 from config import TARGET_STATES, TARGET_KEYWORDS, EMPLOYEE_RANGE
 from utils import DATA_DIR, write_csv_rows, already_processed_keys, CallCounter
 

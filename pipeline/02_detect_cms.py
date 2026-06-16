@@ -21,10 +21,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import apollo_client
-import exa_client
 import site_fingerprint
-import claude_classifier
+from api_wrappers import claude_classifier, apollo_client, exa_client
 from config import CMS_APOLLO_TECH_UID_GUESSES
 from utils import DATA_DIR, read_csv_rows, append_csv_row, already_processed_keys, CallCounter
 
