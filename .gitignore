@@ -1,0 +1,15 @@
+# API keys — never commit
+.env
+
+# Pipeline output (intermediate + final data files)
+data/*.csv
+data/*.jsonl
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# IDE
+.idea/
+.vscode/
