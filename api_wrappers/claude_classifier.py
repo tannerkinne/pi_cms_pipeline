@@ -1,17 +1,12 @@
 """
-Takes the assembled evidence (site fingerprint hits, Apollo job postings /
-technologies, Exa search snippets) for one firm and asks Claude to produce
-the final structured call: cms_detected, cms_confidence, cms_evidence,
-hiring_signal. This is the only step requiring judgment across noisy,
-possibly-contradictory evidence, which is why it's the one step that
-isn't simple rule-matching.
+Takes the assembled evidence (site fingerprint hits, careers page job titles,
+Exa search snippets) for one firm and asks Claude to produce the final
+structured call: cms_detected, cms_confidence, cms_evidence, hiring_signal.
 
 Uses the cheapest current model (Haiku) by default — see config.py.
-Costs are small: each call is a short, bounded-size prompt with a small
-JSON response, so even a 150-firm run should be inexpensive. If you find
-Haiku's calls inconsistent on ambiguous cases, swap CLAUDE_MODEL in
-config.py to claude-sonnet-4-6 — it'll cost more per call but should be
-more reliable for borderline judgment calls.
+Each call is a short, bounded-size prompt with a small JSON response, so
+even a 200-firm run should be inexpensive. If Haiku's calls look inconsistent
+on ambiguous cases, swap CLAUDE_MODEL in config.py to claude-sonnet-4-6.
 """
 import os
 import json
@@ -24,7 +19,7 @@ VALID_CONFIDENCE = ["High", "Medium", "Low"]
 VALID_PI_FOCUS = ["Yes", "Mixed", "No"]
 
 SYSTEM_PROMPT = """You are tagging law firms with the case-management software (CMS) they use, \
-based on evidence gathered from their website, Apollo.io company data, and web search snippets. \
+based on evidence gathered from their website and web search snippets. \
 You also judge whether the firm is plaintiff-side personal injury, using a homepage text snippet.
 
 Valid cms_detected values: CloudLex, Filevine, Litify, SmartAdvocate, CASEpeer, Unknown.
@@ -32,12 +27,12 @@ Valid plaintiff_pi_focus values: Yes, Mixed, No.
 
 Rules:
 - A CMS name found directly in the firm's own site source (portal links, branding) is strong evidence.
-- A CMS name mentioned in a job posting (e.g. "experience with Filevine required") is strong evidence.
+- A CMS name mentioned in a job title or careers page (e.g. "experience with Filevine required") is strong evidence.
 - A CMS name only appearing in a generic/unrelated web search snippet is weak evidence.
 - Litify is built on Salesforce — "force.com" or "salesforce" alone, without the word "litify" \
 itself, is only weak/Low-confidence evidence, never High.
 - If evidence is contradictory (e.g. two different CMS names both mentioned), prefer the one with \
-stronger evidence type (site source / job posting > generic web mention), and lower the confidence.
+stronger evidence type (site source / careers page > generic web mention), and lower the confidence.
 - If there is no real evidence for any CMS, return "Unknown" with confidence "Low" — never guess.
 - hiring_signal is "Yes" if there's evidence of an open case manager / intake / paralegal / \
 records role at this firm, else "No".
@@ -121,8 +116,8 @@ def _validate(parsed: dict) -> dict:
     }
 
 
-def classify_firm(firm_name: str, fingerprint_result: dict, apollo_job_postings: list,
-                   apollo_technologies: list, exa_evidence: list) -> dict:
+def classify_firm(firm_name: str, fingerprint_result: dict, careers_job_titles: list,
+                   exa_evidence: list) -> dict:
     """
     Assembles a compact evidence bundle as text and asks Claude to classify.
     Keeps the prompt small/cheap by truncating list lengths up front rather
@@ -143,18 +138,12 @@ def classify_firm(firm_name: str, fingerprint_result: dict, apollo_job_postings:
     lines.append(f"  {snippet if snippet else '(homepage unreachable or empty)'}")
     lines.append("")
 
-    lines.append("APOLLO JOB POSTINGS (current openings at this firm):")
-    if apollo_job_postings:
-        for jp in apollo_job_postings[:8]:
-            title = jp.get("title") or jp.get("name") or "Untitled posting"
-            desc = (jp.get("description") or jp.get("snippet") or "")[:300]
-            lines.append(f"  - {title}: {desc}")
+    lines.append("CAREERS PAGE JOB TITLES (from /careers page scrape):")
+    if careers_job_titles:
+        for title in careers_job_titles[:10]:
+            lines.append(f"  - {title}")
     else:
-        lines.append("  - none found / not available")
-    lines.append("")
-
-    lines.append("APOLLO TECHNOLOGY TAGS (Apollo's own tech-stack detection, if any):")
-    lines.append(f"  - {', '.join(apollo_technologies) if apollo_technologies else 'none found / not available'}")
+        lines.append("  - none found / careers page not available")
     lines.append("")
 
     lines.append("WEB SEARCH SNIPPETS (Exa):")

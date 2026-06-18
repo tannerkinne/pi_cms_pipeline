@@ -44,6 +44,13 @@ def _extract_visible_text(html: str, max_chars: int = 900) -> str:
         return text[:max_chars]
 
 
+def _extract_job_titles(html: str) -> list:
+    """Scan careers page HTML for job title patterns from HIRING_SIGNAL_TITLES."""
+    from config import HIRING_SIGNAL_TITLES
+    text_lower = html.lower()
+    return [title for title in HIRING_SIGNAL_TITLES if title in text_lower]
+
+
 def fingerprint_site(domain: str) -> dict:
     """
     Returns: {
@@ -51,6 +58,7 @@ def fingerprint_site(domain: str) -> dict:
         "pages_checked": [urls actually fetched successfully],
         "errors": [paths that failed],
         "homepage_text_snippet": str,  # for plaintiff-PI-focus judgment downstream
+        "job_titles_found": [title strings found on /careers page],
     }
     Never raises — a firm with an unreachable site just gets empty hits.
     """
@@ -59,6 +67,7 @@ def fingerprint_site(domain: str) -> dict:
     pages_checked = []
     errors = []
     homepage_text_snippet = ""
+    job_titles_found = []
 
     for path in SITE_PATHS_TO_CHECK:
         url = f"https://{domain}{path}"
@@ -77,6 +86,9 @@ def fingerprint_site(domain: str) -> dict:
 
             if path == "" and not homepage_text_snippet:
                 homepage_text_snippet = _extract_visible_text(resp.text)
+
+            if path == "/careers" and not job_titles_found:
+                job_titles_found = _extract_job_titles(resp.text)
 
             for cms, signatures in CMS_SITE_SIGNATURES.items():
                 if any(sig in text_lower for sig in signatures):
@@ -97,4 +109,5 @@ def fingerprint_site(domain: str) -> dict:
         "pages_checked": pages_checked,
         "errors": errors,
         "homepage_text_snippet": homepage_text_snippet,
+        "job_titles_found": job_titles_found,
     }

@@ -64,7 +64,7 @@ def main():
             "city": firm.get("city", ""),
             "state": firm.get("state", ""),
             "plaintiff_pi_focus": cms.get("plaintiff_pi_focus", ""),
-            "est_attorneys": firm.get("est_employees", ""),  # Apollo total-headcount estimate; see README caveat
+            "est_attorneys": firm.get("est_employees", ""),  # not available from Google Places; blank for all rows
             "cms_detected": cms_detected,
             "cms_confidence": cms.get("cms_confidence", ""),
             "cms_evidence": cms.get("cms_evidence", ""),
@@ -79,7 +79,9 @@ def main():
             employees = int(float(firm.get("est_employees", "") or 0))
         except ValueError:
             employees = 0
-        is_outlier = employees and (employees < SIZE_BOX_MIN or employees > SIZE_BOX_MAX)
+        # est_employees is not available from Google Places sourcing (always 0/blank).
+        # Only flag outliers when an actual employee count is present.
+        is_outlier = bool(employees) and (employees < SIZE_BOX_MIN or employees > SIZE_BOX_MAX)
 
         if is_outlier and score in ("Hot", "Warm"):
             bonus_rows.append(row)

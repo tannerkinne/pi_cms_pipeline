@@ -12,11 +12,10 @@ USAGE
     python run_pipeline.py --limit 5
 
   Full run once you trust the output:
-    python run_pipeline.py --limit 150
+    python run_pipeline.py --limit 200
 
-  Cost-trimmed full run (skip Exa, the priciest per-firm signal, and rely
-  on fingerprinting + Apollo job postings only):
-    python run_pipeline.py --limit 150 --skip-exa
+  Cost-trimmed full run (skip Exa, the priciest per-firm signal):
+    python run_pipeline.py --limit 200 --skip-exa
 
 See README.md for required environment variables and per-stage cost notes.
 """
@@ -40,11 +39,14 @@ def run_stage(script_name, extra_args):
 
 def main():
     parser = argparse.ArgumentParser(description="Run the full plaintiff-PI CMS-detection pipeline.")
-    parser.add_argument("--limit", type=int, default=10, help="Max firms to process end to end (default 10; raise to ~150-200 for a full run).")
-    parser.add_argument("--dry-run", action="store_true", help="No real API calls anywhere; validates wiring with mock data.")
-    parser.add_argument("--skip-exa", action="store_true", help="Skip Exa search in Stage 2 to cut cost.")
-    parser.add_argument("--skip-apollo-jobs", action="store_true", help="Skip Apollo job-postings lookup in Stage 2 to cut cost.")
-    parser.add_argument("--skip-contacts", action="store_true", help="Skip Stage 3 entirely (decision-maker lookup).")
+    parser.add_argument("--limit", type=int, default=10,
+                        help="Max firms to process end to end (default 10; raise to ~200 for a full run).")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="No real API calls anywhere; validates wiring with mock data.")
+    parser.add_argument("--skip-exa", action="store_true",
+                        help="Skip Exa search in Stage 2 to cut cost.")
+    parser.add_argument("--skip-contacts", action="store_true",
+                        help="Skip Stage 3 entirely (decision-maker lookup).")
     args = parser.parse_args()
 
     common = ["--limit", str(args.limit)]
@@ -56,8 +58,6 @@ def main():
     stage2_args = list(common)
     if args.skip_exa:
         stage2_args.append("--skip-exa")
-    if args.skip_apollo_jobs:
-        stage2_args.append("--skip-apollo-jobs")
     run_stage("02_detect_cms.py", stage2_args)
 
     if not args.skip_contacts:

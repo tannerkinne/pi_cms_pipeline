@@ -3,10 +3,34 @@ Shared configuration: CMS detection signatures, fit-score rules, target states.
 Edit this file to tune scope without touching pipeline logic.
 """
 
-# --- Geography & sourcing scope (from project brief) ---
-TARGET_STATES = ["new jersey", "new york", "pennsylvania"]
-TARGET_KEYWORDS = ["personal injury", "plaintiff personal injury"]
-EMPLOYEE_RANGE = "5,50"  # Apollo organization_num_employees_ranges format: "min,max"
+# --- Geography & sourcing scope ---
+TARGET_STATES = ["new jersey", "new york", "pennsylvania", "connecticut"]
+
+# --- Google Places API — firm sourcing configuration ---
+# Bounding boxes (SW lat/lng → NE lat/lng) for each target state.
+GOOGLE_PLACES_STATE_BBOXES = {
+    "new jersey":   {"sw": (38.9, -75.6), "ne": (41.4, -73.9)},
+    "new york":     {"sw": (40.5, -79.8), "ne": (45.1, -71.9)},
+    "pennsylvania": {"sw": (39.7, -80.5), "ne": (42.3, -74.7)},
+    "connecticut":  {"sw": (40.9, -73.7), "ne": (42.1, -71.8)},
+}
+
+# Search queries run per state. Multiple queries improve recall across the
+# different ways people describe PI firms and the cases they handle.
+GOOGLE_PLACES_QUERIES = [
+    "personal injury law firm",
+    "plaintiff personal injury attorney",
+    "car accident attorney",
+    "car crash lawyer",
+    "auto accident law firm",
+    "slip and fall attorney",
+    "injury lawyer",
+]
+
+# Max Places API pages to fetch per (state, query) combination.
+# Each page = 1 API call ($17/1000). 4 states × 7 queries × 5 pages = 140 calls max.
+# Cross-query duplicates are deduped by domain before writing to CSV.
+GOOGLE_PLACES_MAX_PAGES = 5
 
 # --- CMS systems we care about, ranked by value to us ---
 # "Hot" = systems we already have integrations for.
@@ -42,6 +66,9 @@ CMS_SECONDARY_SIGNATURES = {
 # expose client-portal links from contact/intake pages, not the homepage.
 SITE_PATHS_TO_CHECK = ["", "/contact", "/contact-us", "/careers", "/intake", "/client-portal"]
 
+# Pages to check when scraping for decision-maker contacts.
+CONTACT_PATHS_TO_CHECK = ["/about", "/attorneys", "/our-team", "/team", "/about-us", "/our-attorneys"]
+
 # Job titles that signal the intake/records/case-manager hiring pattern
 # called out in the brief as the most reliable CMS-detection signal.
 HIRING_SIGNAL_TITLES = [
@@ -52,19 +79,6 @@ HIRING_SIGNAL_TITLES = [
     "medical records",
     "case coordinator",
 ]
-
-# Apollo technology UIDs to probe for (underscores replace spaces/periods).
-# These are guesses — Apollo's 1,500+ tracked technologies skew toward
-# broad B2B SaaS, so niche legal CMS platforms may not be tracked at all.
-# The pipeline checks this list against Apollo's actual supported-technologies
-# export at runtime and only uses what's really there.
-CMS_APOLLO_TECH_UID_GUESSES = {
-    "CloudLex": ["cloudlex"],
-    "Filevine": ["filevine"],
-    "Litify": ["litify", "salesforce"],
-    "SmartAdvocate": ["smartadvocate"],
-    "CASEpeer": ["casepeer"],
-}
 
 
 def fit_score(cms_detected: str) -> str:
