@@ -48,7 +48,9 @@ def main():
     main_rows, bonus_rows = [], []
 
     for domain, firm in firms.items():
-        cms = cms_results.get(domain, {})
+        if domain not in cms_results:
+            continue
+        cms = cms_results[domain]
         contact = contacts.get(domain, {})
 
         cms_detected = cms.get("cms_detected", "Unknown")
@@ -64,7 +66,7 @@ def main():
             "city": firm.get("city", ""),
             "state": firm.get("state", ""),
             "plaintiff_pi_focus": cms.get("plaintiff_pi_focus", ""),
-            "est_attorneys": firm.get("est_employees", ""),  # not available from Google Places; blank for all rows
+            "est_attorneys": "",  # not available from Google Places sourcing
             "cms_detected": cms_detected,
             "cms_confidence": cms.get("cms_confidence", ""),
             "cms_evidence": cms.get("cms_evidence", ""),
@@ -75,13 +77,9 @@ def main():
             "fit_score": score,
         }
 
-        try:
-            employees = int(float(firm.get("est_employees", "") or 0))
-        except ValueError:
-            employees = 0
-        # est_employees is not available from Google Places sourcing (always 0/blank).
-        # Only flag outliers when an actual employee count is present.
-        is_outlier = bool(employees) and (employees < SIZE_BOX_MIN or employees > SIZE_BOX_MAX)
+        # est_attorneys is not available from Google Places sourcing, so is_outlier is
+        # always False and bonus.csv will be empty unless a future sourcing stage adds counts.
+        is_outlier = False
 
         if is_outlier and score in ("Hot", "Warm"):
             bonus_rows.append(row)

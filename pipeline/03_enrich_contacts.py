@@ -27,6 +27,7 @@ from config import CONTACT_PATHS_TO_CHECK, CLAUDE_MODEL, SITE_FETCH_TIMEOUT_SECO
 from utils import DATA_DIR, read_csv_rows, append_csv_row, already_processed_keys, CallCounter
 
 INPUT_PATH = os.path.join(DATA_DIR, "firms_raw.csv")
+CMS_PATH = os.path.join(DATA_DIR, "cms_results.csv")
 OUTPUT_PATH = os.path.join(DATA_DIR, "contacts.csv")
 
 FIELDNAMES = ["domain", "decision_maker_name", "decision_maker_title", "decision_maker_note"]
@@ -120,7 +121,8 @@ def main():
         return
 
     done = already_processed_keys(OUTPUT_PATH, "domain")
-    todo = [f for f in firms if f["domain"] not in done][: args.limit]
+    classified = already_processed_keys(CMS_PATH, "domain")
+    todo = [f for f in firms if f["domain"] in classified and f["domain"] not in done][: args.limit]
     counter = CallCounter()
 
     print(f"Stage 3: processing {len(todo)} firms ({len(done)} already done, skipped).")

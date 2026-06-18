@@ -32,7 +32,7 @@ def _domain_from_website(website: str) -> str:
     if not website:
         return ""
     d = website.strip().lower().replace("http://", "").replace("https://", "")
-    return d.split("/")[0]
+    return d.split("/")[0].removeprefix("www.")
 
 
 def _mock_places(n: int) -> list:
