@@ -15,6 +15,7 @@ import re
 import json
 import time
 import requests
+from typing import Optional
 
 from config import (
     CMS_SITE_SIGNATURES,
@@ -334,16 +335,55 @@ def _scrape_attorney_pages(domain: str) -> dict:
     return {"text": "\n".join(combined)[:6000], "names": names}
 
 
-def fingerprint_site(domain: str) -> dict:
+def _render_html(url: str, timeout_ms: int = 12000) -> Optional[str]:
+    """Return fully-rendered HTML for `url` via Playwright/headless Chromium, or
+    None on ANY failure (Playwright not installed, navigation timeout, crash...).
+
+    Playwright is imported lazily so the dependency is only needed when the
+    render path is actually enabled — the static pipeline keeps zero new required
+    deps. This never raises: same contract as the rest of the module, so a render
+    that fails simply contributes no extra signal and the caller falls back to the
+    static result. The browser is always closed (try/finally) even on timeout so
+    we don't leak Chromium processes across a batch."""
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        return None
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            try:
+                page = browser.new_page(user_agent=USER_AGENT)
+                page.goto(url, wait_until="networkidle", timeout=timeout_ms)
+                return page.content()
+            finally:
+                browser.close()
+    except Exception:
+        return None  # never raise — same contract as the rest of the module
+
+
+def fingerprint_site(domain: str, render: str = "off") -> dict:
     """
+    render controls the optional headless-browser fallback (Playwright/Chromium):
+      "off"      — static path only; byte-for-byte the original behavior. Default.
+      "fallback" — after the static pass, render at most two pages (homepage +
+                   first attorney path) ONLY when the static result was
+                   low-signal (no portal hits AND < 2 attorney names found), then
+                   re-run the existing parse helpers over the rendered HTML.
+      "always"   — always render those two pages regardless of static signal
+                   (manual debugging option).
+    Rendering is purely additive: any portal/name signal it recovers is merged
+    into the static result; if it fails or finds nothing the static result stands.
+
     Returns: {
         "hits": {cms_name: ["portal_link"|"primary"|"secondary", ...]},  # signal types fired
-        "pages_checked": [urls actually fetched successfully],
+        "pages_checked": [urls actually fetched successfully],  # rendered pages tagged "rendered:<url>"
         "errors": [paths that failed],
         "homepage_text_snippet": str,  # for plaintiff-PI-focus judgment downstream
         "job_titles_found": [title strings found on /careers page],
         "attorney_page_text": str,  # concatenated attorney-listing text for headcount
         "attorney_names": [str],    # names parsed from JSON-LD + honorific markers
+        "rendered": bool,           # whether a headless render actually happened
     }
     Never raises — a firm with an unreachable site just gets empty hits.
     """
@@ -394,6 +434,47 @@ def fingerprint_site(domain: str) -> dict:
 
     # Scrape attorney-listing pages so Claude can estimate headcount downstream.
     attorney_data = _scrape_attorney_pages(domain)
+    attorney_names = attorney_data["names"]
+
+    # --- Optional headless-browser fallback (Playwright/Chromium) ---------------
+    # Render at most TWO pages and only when it can add signal the static fetch
+    # missed: JS-injected client-portal links and client-side attorney cards.
+    rendered = False
+    has_portal_hit = any("portal_link" in kinds for kinds in hits.values())
+    low_signal = (not has_portal_hit) and len(attorney_names) < 2
+    should_render = render == "always" or (render == "fallback" and low_signal)
+
+    if should_render:
+        # (1) Homepage — recover JS-injected portal links, then follow them one
+        #     hop exactly like the static path does.
+        home_html = _render_html(f"https://{domain}")
+        if home_html is not None:
+            rendered = True
+            pages_checked.append(f"rendered:https://{domain}")
+            _scan_for_cms(home_html, hits)
+            rendered_links = _find_portal_links(home_html, domain)
+            if rendered_links:
+                _follow_portal_links(rendered_links, hits, pages_checked, errors)
+
+        # (2) First reachable attorney-listing path — recover client-side cards.
+        #     Reuse the existing JSON-LD + name extraction; merge de-duped,
+        #     order-preserving into the names we already have.
+        seen_names = {n.lower() for n in attorney_names}
+        for path in ATTORNEY_LISTING_PATHS:
+            att_url = f"https://{domain}{path}"
+            att_html = _render_html(att_url)
+            if att_html is None:
+                continue
+            rendered = True
+            pages_checked.append(f"rendered:{att_url}")
+            full_text = _visible_text_full(att_html, drop_chrome=False)
+            for n in _extract_jsonld_names(att_html) + _extract_attorney_names(full_text):
+                key = n.lower()
+                if key not in seen_names:
+                    seen_names.add(key)
+                    attorney_names.append(n)
+            # Only the first reachable attorney path, to bound render cost.
+            break
 
     # Convert sets to sorted lists for clean JSON/CSV serialization downstream.
     hits = {cms: sorted(kinds) for cms, kinds in hits.items()}
@@ -404,5 +485,6 @@ def fingerprint_site(domain: str) -> dict:
         "homepage_text_snippet": homepage_text_snippet,
         "job_titles_found": job_titles_found,
         "attorney_page_text": attorney_data["text"],
-        "attorney_names": attorney_data["names"],
+        "attorney_names": attorney_names,
+        "rendered": rendered,
     }

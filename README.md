@@ -34,6 +34,38 @@ cp .env.example .env
 (APIs & Services → Library). This is a distinct product from the older "Places API" —
 the New one is required. Then create an API key under APIs & Services → Credentials.
 
+### Optional: JS-rendered sites (headless browser)
+
+A minority of firms inject their "Client Login" portal link or their attorney
+cards client-side, so the static fetch sees neither. Stage 2 has an opt-in
+headless-browser fallback (Playwright + Chromium) that re-fetches *only* those
+low-signal sites and re-runs the existing parsers over the rendered HTML.
+
+It's behind an **optional extra** — the base install stays dependency-light:
+
+```bash
+pip install -r requirements-render.txt
+python -m playwright install chromium   # Chromium only, ~150 MB — do NOT run bare `playwright install`
+```
+
+Then enable it via `--render`:
+
+```bash
+# Render only firms whose static fetch found no portal link AND < 2 attorney names:
+python run_pipeline.py --limit 200 --render fallback
+python pipeline/02_detect_cms.py --limit 200 --render fallback
+
+# Render every firm (debugging only — much slower):
+python pipeline/02_detect_cms.py --limit 20 --render always
+```
+
+Modes: `off` (default; static only, zero new deps), `fallback` (render only
+low-signal firms — the recommended cost-controlled mode), `always` (render every
+firm, for debugging). If the extra isn't installed the render helper degrades to
+a no-op and the static result stands. `--render` is ignored under `--dry-run`.
+The end-of-run summary reports a `playwright_render` count so you can see how
+often it actually fired.
+
 ## Usage — start cheap, then scale
 
 ```bash
@@ -70,6 +102,7 @@ python pipeline/04_score_and_export.py
 | `--limit N` | Caps how many firms go through the *entire* pipeline per run |
 | `--skip-exa` | Stage 2 skips Exa search (the priciest per-firm signal); relies on free site fingerprinting only |
 | `--skip-contacts` | Skips Stage 3 (decision-maker lookup) entirely |
+| `--render {off,fallback,always}` | Stage 2 headless-browser fallback for JS-rendered sites (requires the optional render extra). `fallback` renders only low-signal firms; adds a few minutes per ~200-firm batch. Default `off`. |
 
 **Realistic per-run cost** at 200 firms:
 - Stage 1 (Google Places): ~$2–3 total (billed per API call, not per firm; ~140 calls across 4 states × 7 queries)

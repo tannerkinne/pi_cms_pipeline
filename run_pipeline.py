@@ -47,6 +47,9 @@ def main():
                         help="Skip Exa search in Stage 2 to cut cost.")
     parser.add_argument("--skip-contacts", action="store_true",
                         help="Skip Stage 3 entirely (decision-maker lookup).")
+    parser.add_argument("--render", choices=["off", "fallback", "always"], default="off",
+                        help="Stage 2 headless-browser fallback for JS-rendered sites "
+                             "(requires the optional render extra; see requirements-render.txt).")
     args = parser.parse_args()
 
     common = ["--limit", str(args.limit)]
@@ -58,6 +61,10 @@ def main():
     stage2_args = list(common)
     if args.skip_exa:
         stage2_args.append("--skip-exa")
+    # Render is a Stage-2-only concern and is ignored under --dry-run (Stage 2
+    # never renders mock evidence), but pass it through so a real run can opt in.
+    if args.render != "off":
+        stage2_args += ["--render", args.render]
     run_stage("02_detect_cms.py", stage2_args)
 
     if not args.skip_contacts:

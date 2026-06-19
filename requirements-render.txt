@@ -1,0 +1,14 @@
+# Optional "render" extra — headless-browser fallback for JS-rendered firm sites.
+#
+# This is NOT part of the base install (requirements.txt). The pipeline runs
+# fully on the static path with zero new deps. Install this only if you want the
+# opt-in `--render fallback` / `--render always` path in Stage 2, which uses
+# Playwright + headless Chromium to re-fetch low-signal sites that inject their
+# client-portal links or attorney cards client-side.
+#
+# After `pip install -r requirements-render.txt` you MUST also download the
+# browser binary (Chromium only — do not run bare `playwright install`):
+#
+#     python -m playwright install chromium
+#
+playwright>=1.40

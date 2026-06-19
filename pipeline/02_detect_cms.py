@@ -17,6 +17,14 @@ off for your sample (see README).
 import argparse
 import os
 import sys
+import warnings
+
+# This repo's macOS Python links against LibreSSL, so urllib3 v2 emits a
+# NotOpenSSLWarning on every requests call (see docs/headless_browser_scope.md §6).
+# Suppress ONLY that one warning by message so the per-firm / render logs stay
+# readable. Scoped narrowly on purpose: all other warnings still surface, and
+# this is a no-op on environments that don't emit it.
+warnings.filterwarnings("ignore", message=r".*OpenSSL.*", module="urllib3")
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -56,6 +64,11 @@ def main():
                         help="Use mock evidence; no paid API calls at all.")
     parser.add_argument("--skip-exa", action="store_true",
                         help="Skip Exa search step (saves Exa credits; relies on fingerprint only).")
+    parser.add_argument("--render", choices=["off", "fallback", "always"], default="off",
+                        help="Headless-browser (Playwright) fallback for JS-rendered sites. "
+                             "'off' (default) = static only; 'fallback' = render only low-signal "
+                             "firms; 'always' = render every firm (debug). Requires the optional "
+                             "render extra (requirements-render.txt). Never used in --dry-run.")
     args = parser.parse_args()
 
     os.makedirs(DATA_DIR, exist_ok=True)
@@ -79,8 +92,10 @@ def main():
             ev = _mock_evidence(firm_name)
             counter.tick("dry_run_mock_evidence", 1)
         else:
-            fingerprint = site_fingerprint.fingerprint_site(domain)
+            fingerprint = site_fingerprint.fingerprint_site(domain, render=args.render)
             counter.tick("site_fetch (free)", len(fingerprint.get("pages_checked", [])) + len(fingerprint.get("errors", [])))
+            if fingerprint.get("rendered"):
+                counter.tick("playwright_render", 1)
 
             exa_evidence = []
             if not args.skip_exa:
