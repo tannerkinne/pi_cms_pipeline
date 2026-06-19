@@ -9,8 +9,6 @@ search and can match relevant pages without exact keyword repetition.
 """
 import os
 
-CMS_NAMES = ["CloudLex", "Filevine", "Litify", "SmartAdvocate", "CASEpeer"]
-
 
 def _client():
     from exa_py import Exa

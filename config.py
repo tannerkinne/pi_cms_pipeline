@@ -67,7 +67,7 @@ CMS_SECONDARY_SIGNATURES = {
 SITE_PATHS_TO_CHECK = ["", "/contact", "/contact-us", "/careers", "/intake", "/client-portal"]
 
 # Pages to check when scraping for decision-maker contacts.
-CONTACT_PATHS_TO_CHECK = ["/about", "/attorneys", "/our-team", "/team", "/about-us", "/our-attorneys"]
+CONTACT_PATHS_TO_CHECK = ["/attorneys", "/our-team", "/team", "/our-attorneys", "/about-us", "/about"]
 
 # Job titles that signal the intake/records/case-manager hiring pattern
 # called out in the brief as the most reliable CMS-detection signal.

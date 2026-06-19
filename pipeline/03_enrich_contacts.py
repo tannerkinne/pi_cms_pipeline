@@ -70,8 +70,8 @@ def _fetch_contact_page(domain: str) -> tuple:
                 headers={"User-Agent": USER_AGENT},
                 timeout=SITE_FETCH_TIMEOUT_SECONDS,
             )
-            time.sleep(0.5)
             if resp.status_code < 400:
+                time.sleep(0.5)
                 return _extract_visible_text(resp.text), url
         except requests.RequestException:
             continue

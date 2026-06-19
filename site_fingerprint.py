@@ -77,10 +77,10 @@ def fingerprint_site(domain: str) -> dict:
                 headers={"User-Agent": USER_AGENT},
                 timeout=SITE_FETCH_TIMEOUT_SECONDS,
             )
-            time.sleep(SITE_FETCH_DELAY_SECONDS)
             if resp.status_code >= 400:
                 errors.append(f"{path} -> HTTP {resp.status_code}")
                 continue
+            time.sleep(SITE_FETCH_DELAY_SECONDS)
             pages_checked.append(url)
             text_lower = resp.text.lower()
 
