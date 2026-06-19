@@ -1,14 +1,9 @@
 """
-Stage 3 — Decision-maker lookup via firm website scraping.
+Stage 3 — Decision-maker lookup via Apollo People Search + firm website scraping.
 
-Fetches the firm's About/Attorneys/Team pages and uses a small Claude call to
-identify the best decision-maker contact (COO, Director of Ops, Managing Partner,
-etc.). This replaces the previous Apollo people search, which required a paid
-"master" API tier and was effectively broken for most users.
-
-Website scraping is free. The Claude call per firm is tiny (~1200 chars of page
-text + a short system prompt) — roughly the same cost as the CMS classification
-call in Stage 2.
+Tries Apollo first (structured title/name data). Falls back to scraping the
+firm's attorneys/team pages and running a small Claude call if Apollo returns
+nothing or APOLLO_API_KEY is not set.
 
 Output: data/contacts.csv
 """
@@ -23,6 +18,7 @@ import requests
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from api_wrappers import apollo_client
 from config import CONTACT_PATHS_TO_CHECK, CLAUDE_MODEL, SITE_FETCH_TIMEOUT_SECONDS, USER_AGENT
 from utils import DATA_DIR, read_csv_rows, append_csv_row, already_processed_keys, CallCounter
 
@@ -33,8 +29,8 @@ OUTPUT_PATH = os.path.join(DATA_DIR, "contacts.csv")
 FIELDNAMES = ["domain", "decision_maker_name", "decision_maker_title", "decision_maker_note"]
 
 CONTACT_SYSTEM_PROMPT = """You are extracting one decision-maker contact from a law firm's \
-team or about page. Prefer these titles in order: Director of Operations, COO, \
-Chief Operating Officer, Managing Partner, Owner, Founding Partner.
+team or about page. Prefer these titles in order: Managing Partner, Owner, \
+Founding Partner, Director of Operations, COO, Chief Operating Officer.
 
 Respond ONLY with a single JSON object, no markdown fences:
 {"name": "<full name or empty string>", "title": "<title or empty string>", \
@@ -143,16 +139,25 @@ def main():
             counter.tick("site_fetch_contact_page (free)", 1)
 
             if not page_text:
-                row = {
-                    "domain": domain,
+                scrape_contact = {
                     "decision_maker_name": "",
                     "decision_maker_title": "",
                     "decision_maker_note": "no team/about page reachable",
                 }
             else:
-                contact = _extract_contact_claude(page_text)
+                scrape_contact = _extract_contact_claude(page_text)
                 counter.tick("claude_contact_extraction", 1)
-                row = {"domain": domain, **contact}
+
+            # Try Apollo first — prefer it when available (structured data).
+            apollo_result = None
+            try:
+                apollo_result = apollo_client.find_decision_maker(domain)
+                counter.tick("apollo_people_search", 1)
+            except RuntimeError:
+                pass  # APOLLO_API_KEY not set — silently fall back to scrape
+
+            contact = apollo_result if apollo_result else scrape_contact
+            row = {"domain": domain, **contact}
 
         append_csv_row(OUTPUT_PATH, row, FIELDNAMES)
         name = row.get("decision_maker_name") or "(not found)"

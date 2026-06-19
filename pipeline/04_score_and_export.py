@@ -4,7 +4,7 @@ final deliverable matching the brief's output schema. No API calls.
 
 Outputs:
   data/final_output.csv  — main list, sorted by fit_score (Hot > Warm > Cold/Unknown)
-  data/bonus.csv          — firms outside the 5-50 employee box that still
+  data/bonus.csv          — firms outside the 5-100 employee box that still
                              scored Hot/Warm (per the brief's "log it in a
                              separate Bonus tab, don't throw it away" rule)
 """
@@ -23,8 +23,8 @@ FINAL_PATH = os.path.join(DATA_DIR, "final_output.csv")
 BONUS_PATH = os.path.join(DATA_DIR, "bonus.csv")
 
 FIELDNAMES = [
-    "firm_name", "website", "city", "state", "plaintiff_pi_focus", "est_attorneys",
-    "cms_detected", "cms_confidence", "cms_evidence", "decision_maker",
+    "firm_name", "website", "city", "state", "plaintiff_pi_focus", "trial_focused",
+    "est_attorneys", "cms_detected", "cms_confidence", "cms_evidence", "decision_maker",
     "hiring_signal", "hiring_signal_evidence", "data_source", "fit_score",
 ]
 
@@ -33,7 +33,7 @@ FIT_SORT_ORDER = {"Hot": 0, "Warm": 1, "Cold/Unknown": 2}
 # Employee range used in Stage 1 sourcing — kept here only to flag bonus-tab
 # logic if you widen sourcing later; with default sourcing every row is
 # already inside the box, so bonus.csv will typically be empty.
-SIZE_BOX_MIN, SIZE_BOX_MAX = 5, 50
+SIZE_BOX_MIN, SIZE_BOX_MAX = 5, 100
 
 
 def main():
@@ -66,7 +66,8 @@ def main():
             "city": firm.get("city", ""),
             "state": firm.get("state", ""),
             "plaintiff_pi_focus": cms.get("plaintiff_pi_focus", ""),
-            "est_attorneys": "",  # not available from Google Places sourcing
+            "trial_focused": cms.get("trial_focused", ""),
+            "est_attorneys": cms.get("est_attorneys", ""),
             "cms_detected": cms_detected,
             "cms_confidence": cms.get("cms_confidence", ""),
             "cms_evidence": cms.get("cms_evidence", ""),

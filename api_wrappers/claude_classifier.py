@@ -17,6 +17,7 @@ from config import CLAUDE_MODEL
 VALID_CMS = ["CloudLex", "Filevine", "Litify", "SmartAdvocate", "CASEpeer", "Unknown"]
 VALID_CONFIDENCE = ["High", "Medium", "Low"]
 VALID_PI_FOCUS = ["Yes", "Mixed", "No"]
+VALID_TRIAL_FOCUSED = ["Yes", "No", "Unknown"]
 
 SYSTEM_PROMPT = """You are tagging law firms with the case-management software (CMS) they use, \
 based on evidence gathered from their website and web search snippets. \
@@ -41,6 +42,13 @@ contingency-fee language, practice areas like car accidents, slip and fall, medi
 as plaintiff representation). "No" if it's clearly insurance defense, general practice with no PI \
 emphasis, or a non-PI specialty. "Mixed" if it does both plaintiff PI and other work, or if the \
 snippet is too thin to tell confidently — do not guess "Yes" from a thin snippet.
+- trial_focused: "Yes" if the firm emphasizes trial experience, courtroom wins, jury verdicts, \
+"we go to trial", or "we don't just settle". "No" if language emphasizes fast settlements, \
+no-risk settlements, or avoids trial language. "Unknown" if there isn't enough evidence to tell.
+- est_attorneys: Your best integer estimate of how many attorneys work at this firm, based on any \
+evidence available (attorney listing pages, "our team of X attorneys", job postings count, firm \
+size mentions in snippets). If you truly cannot estimate, return 0. Do not guess wildly — if the \
+only evidence is a 2-person About page with 2 named attorneys, return 2.
 
 Respond ONLY with a single JSON object, no markdown fences, no preamble, matching this exact shape:
 {
@@ -50,7 +58,9 @@ Respond ONLY with a single JSON object, no markdown fences, no preamble, matchin
   "hiring_signal": "<Yes|No>",
   "hiring_signal_evidence": "<short note or empty string>",
   "plaintiff_pi_focus": "<Yes|Mixed|No>",
-  "plaintiff_pi_focus_note": "<short note, or empty string if homepage text wasn't available>"
+  "plaintiff_pi_focus_note": "<short note, or empty string if homepage text wasn't available>",
+  "trial_focused": "<Yes|No|Unknown>",
+  "est_attorneys": <integer, 0 if unknown>
 }"""
 
 
@@ -92,6 +102,8 @@ def _call_claude(evidence_text: str, max_retries: int = 2) -> dict:
         "hiring_signal_evidence": "",
         "plaintiff_pi_focus": "Mixed",
         "plaintiff_pi_focus_note": "Classification failed; needs manual check.",
+        "trial_focused": "Unknown",
+        "est_attorneys": 0,
     }
 
 
@@ -105,6 +117,13 @@ def _validate(parsed: dict) -> dict:
     pi_focus = parsed.get("plaintiff_pi_focus", "Mixed")
     if pi_focus not in VALID_PI_FOCUS:
         pi_focus = "Mixed"
+    trial_focused = parsed.get("trial_focused", "Unknown")
+    if trial_focused not in VALID_TRIAL_FOCUSED:
+        trial_focused = "Unknown"
+    try:
+        est_attorneys = int(parsed.get("est_attorneys", 0))
+    except (TypeError, ValueError):
+        est_attorneys = 0
     return {
         "cms_detected": cms,
         "cms_confidence": confidence,
@@ -113,6 +132,8 @@ def _validate(parsed: dict) -> dict:
         "hiring_signal_evidence": str(parsed.get("hiring_signal_evidence", ""))[:300],
         "plaintiff_pi_focus": pi_focus,
         "plaintiff_pi_focus_note": str(parsed.get("plaintiff_pi_focus_note", ""))[:300],
+        "trial_focused": trial_focused,
+        "est_attorneys": est_attorneys,
     }
 
 

@@ -29,8 +29,8 @@ OUTPUT_PATH = os.path.join(DATA_DIR, "cms_results.csv")
 
 FIELDNAMES = [
     "domain", "firm_name", "cms_detected", "cms_confidence", "cms_evidence",
-    "hiring_signal", "hiring_signal_evidence", "plaintiff_pi_focus",
-    "plaintiff_pi_focus_note", "site_pages_checked", "site_errors",
+    "hiring_signal", "hiring_signal_evidence", "est_attorneys", "plaintiff_pi_focus",
+    "plaintiff_pi_focus_note", "trial_focused", "site_pages_checked", "site_errors",
 ]
 
 
@@ -101,8 +101,10 @@ def main():
                 "cms_evidence": "dry-run mock — no real classification performed",
                 "hiring_signal": "No",
                 "hiring_signal_evidence": "dry-run mock",
+                "est_attorneys": 0,
                 "plaintiff_pi_focus": "Yes",
                 "plaintiff_pi_focus_note": "dry-run mock",
+                "trial_focused": "Unknown",
             }
         else:
             result = claude_classifier.classify_firm(
@@ -121,8 +123,10 @@ def main():
             "cms_evidence": result["cms_evidence"],
             "hiring_signal": result["hiring_signal"],
             "hiring_signal_evidence": result["hiring_signal_evidence"],
+            "est_attorneys": result["est_attorneys"],
             "plaintiff_pi_focus": result["plaintiff_pi_focus"],
             "plaintiff_pi_focus_note": result["plaintiff_pi_focus_note"],
+            "trial_focused": result["trial_focused"],
             "site_pages_checked": "; ".join(ev["fingerprint"].get("pages_checked", [])),
             "site_errors": "; ".join(ev["fingerprint"].get("errors", [])),
         }
