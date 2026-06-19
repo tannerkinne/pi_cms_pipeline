@@ -27,13 +27,19 @@ Valid cms_detected values: CloudLex, Filevine, Litify, SmartAdvocate, CASEpeer, 
 Valid plaintiff_pi_focus values: Yes, Mixed, No.
 
 Rules:
-- A CMS name found directly in the firm's own site source (portal links, branding) is strong evidence.
+- A "portal_link" signal is the STRONGEST evidence: it means the firm's own "Client Login" link \
+resolves to that CMS vendor's hosted portal domain (e.g. firmname.cloudlex.com, app.filevineapp.com, \
+casepeer.com). A portal_link signal alone justifies High confidence.
+- A CMS name found directly in the firm's own site source ("primary" signal — branding, embedded \
+widgets) is strong evidence (Medium/High).
 - A CMS name mentioned in a job title or careers page (e.g. "experience with Filevine required") is strong evidence.
-- A CMS name only appearing in a generic/unrelated web search snippet is weak evidence.
-- Litify is built on Salesforce — "force.com" or "salesforce" alone, without the word "litify" \
-itself, is only weak/Low-confidence evidence, never High.
-- If evidence is contradictory (e.g. two different CMS names both mentioned), prefer the one with \
-stronger evidence type (site source / careers page > generic web mention), and lower the confidence.
+- A CMS name only appearing in a generic/unrelated web search snippet is weak evidence (Low).
+- Litify is built on Salesforce — "force.com" or "salesforce" alone ("secondary" signal), without the \
+word "litify" itself, is only weak/Low-confidence evidence, never High.
+- Evidence-type precedence, strongest to weakest: portal_link > primary site source / careers page > \
+generic web mention > Salesforce-only secondary signal.
+- If evidence is contradictory (e.g. two different CMS names both mentioned), prefer the one with the \
+stronger evidence type, and lower the confidence.
 - If there is no real evidence for any CMS, return "Unknown" with confidence "Low" — never guess.
 - hiring_signal is "Yes" if there's evidence of an open case manager / intake / paralegal / \
 records role at this firm, else "No".
@@ -165,6 +171,14 @@ def classify_firm(firm_name: str, fingerprint_result: dict, careers_job_titles: 
             lines.append(f"  - {title}")
     else:
         lines.append("  - none found / careers page not available")
+    lines.append("")
+
+    lines.append("ATTORNEY LISTING PAGE TEXT (count named attorneys here to estimate est_attorneys):")
+    attorney_text = fingerprint_result.get("attorney_page_text", "")
+    if attorney_text:
+        lines.append(f"  {attorney_text}")
+    else:
+        lines.append("  (no attorney listing pages reachable)")
     lines.append("")
 
     lines.append("WEB SEARCH SNIPPETS (Exa):")

@@ -30,9 +30,15 @@ def search_cms_evidence(firm_name: str, city: str = "", state: str = "", num_res
     150-firm batch run.
     """
     location_str = f"{city} {state}".strip()
+    # Phrase the query as a job posting for a case-manager/paralegal role at this
+    # firm — that's where CMS platform names actually appear verbatim in text
+    # ("proficiency with Filevine required"), making it Exa's highest-yield angle
+    # per the brief. The CMS names are appended so the neural search biases toward
+    # pages that name a platform rather than generic firm marketing pages.
     query = (
-        f'"{firm_name}" {location_str} law firm case management software '
-        f'CloudLex Filevine Litify SmartAdvocate CASEpeer client portal job posting'
+        f'{firm_name} {location_str} case manager OR intake specialist OR paralegal '
+        f'job posting "case management software" '
+        f'(CloudLex OR Filevine OR Litify OR SmartAdvocate OR CASEpeer)'
     ).strip()
     try:
         exa = _client()

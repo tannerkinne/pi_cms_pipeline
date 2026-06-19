@@ -2,7 +2,15 @@
 Thin wrapper around the Apollo.io People Search API for decision-maker lookup.
 
 Auth: requires APOLLO_API_KEY env var.
-Endpoint: POST https://api.apollo.io/v1/mixed_people/search
+Endpoint: POST https://api.apollo.io/api/v1/mixed_people/api_search
+
+Notes on the endpoint (these were the source of earlier HTTP 422/403 errors):
+  - The path is /api/v1/mixed_people/api_search — NOT /v1/mixed_people/search.
+    The plain /search variant 403s on Basic plans; api_search is the
+    net-new-prospecting endpoint available to API plans.
+  - Filters (person_titles[], q_organization_domains_list[]) are passed as
+    QUERY-STRING params with bracket array notation, not in the JSON body.
+  - This endpoint returns names + titles (what we need) but not emails/phones.
 
 Returns the best-matching decision-maker (Managing Partner, Owner, COO, etc.)
 for a given firm domain. Returns None if no match or on any error.
@@ -12,7 +20,7 @@ from typing import Optional
 
 import requests
 
-APOLLO_PEOPLE_SEARCH_URL = "https://api.apollo.io/v1/mixed_people/search"
+APOLLO_PEOPLE_SEARCH_URL = "https://api.apollo.io/api/v1/mixed_people/api_search"
 
 DECISION_MAKER_TITLES = [
     "managing partner",
@@ -50,15 +58,19 @@ def find_decision_maker(domain: str) -> Optional[dict]:
                 "Cache-Control": "no-cache",
                 "X-Api-Key": _api_key(),
             },
-            json={
-                "q_organization_domains": domain,
-                "person_titles": DECISION_MAKER_TITLES,
+            # Apollo expects these as query-string params with bracket array
+            # notation, NOT in the JSON body. requests encodes list values as
+            # repeated keys: person_titles[]=managing+partner&person_titles[]=owner...
+            params={
+                "q_organization_domains_list[]": [domain],
+                "person_titles[]": DECISION_MAKER_TITLES,
                 "per_page": 10,
+                "page": 1,
             },
             timeout=15,
         )
         if resp.status_code != 200:
-            print(f"  [apollo] search failed for {domain}: HTTP {resp.status_code}")
+            print(f"  [apollo] search failed for {domain}: HTTP {resp.status_code} {resp.text[:160]}")
             return None
         data = resp.json()
         people = data.get("people", [])

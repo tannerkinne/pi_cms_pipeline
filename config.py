@@ -62,9 +62,35 @@ CMS_SECONDARY_SIGNATURES = {
     "Litify": ["force.com", "lightning.force.com", "salesforce"],
 }
 
+# Domains that CMS vendors host client portals / client logins on. Finding any
+# of these in a link href — or, better, as the redirect target of a firm's
+# "Client Login" link — is the single strongest web-detectable CMS signal,
+# because it means the firm is actively running that CMS's client portal.
+# Treated as a "portal_link" hit (higher confidence than a body-text mention).
+CMS_PORTAL_DOMAINS = {
+    "CloudLex": ["cloudlex.com"],
+    "Filevine": ["filevine.com", "filevineapp.com"],
+    "Litify": ["litify.com", "litify.io", "litify.force.com"],
+    "SmartAdvocate": ["smartadvocate.com", "smartadvocate.net"],
+    "CASEpeer": ["casepeer.com", "casepeer.io"],
+}
+
+# Anchor text that signals a client-portal / case-status login link. The
+# fingerprinter finds these links on the homepage and follows them one hop;
+# the redirect destination's host is checked against CMS_PORTAL_DOMAINS.
+PORTAL_LINK_HINTS = [
+    "client login", "client portal", "client access", "case status",
+    "secure login", "portal login", "make a payment", "pay online",
+    "login", "portal",
+]
+
 # Common subpages worth checking in addition to the homepage. Many firms
 # expose client-portal links from contact/intake pages, not the homepage.
-SITE_PATHS_TO_CHECK = ["", "/contact", "/contact-us", "/careers", "/intake", "/client-portal"]
+SITE_PATHS_TO_CHECK = ["", "/contact", "/contact-us", "/careers", "/intake", "/client-portal", "/login", "/client-login"]
+
+# Pages most likely to list individual attorneys by name. Scraped during
+# Stage 2 specifically so Claude has content to estimate attorney headcount.
+ATTORNEY_LISTING_PATHS = ["/attorneys", "/our-team", "/team", "/our-attorneys", "/about-us", "/about", "/lawyers", "/people"]
 
 # Pages to check when scraping for decision-maker contacts.
 CONTACT_PATHS_TO_CHECK = ["/attorneys", "/our-team", "/team", "/our-attorneys", "/about-us", "/about"]
