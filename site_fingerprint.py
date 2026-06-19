@@ -12,6 +12,7 @@ This is the only fully free signal in the pipeline (no API credits),
 so it always runs regardless of API budget and should be checked first.
 """
 import re
+import json
 import time
 import requests
 
@@ -35,22 +36,164 @@ def _normalize_domain(domain: str) -> str:
     return domain
 
 
-def _extract_visible_text(html: str, max_chars: int = 900) -> str:
-    """Best-effort visible-text extraction for feeding the classifier a
-    snippet it can use to judge plaintiff-PI focus. Falls back to a crude
-    tag strip if BeautifulSoup isn't available for any reason."""
+# Site-builder boilerplate that pollutes the visible text of some firm sites
+# (notably Yext-built sites, which render every "Knowledge Tag" placeholder into
+# the static HTML). Left in place it repeats many times and crowds out the real
+# attorney content within the char cap, which is exactly why est_attorneys came
+# back 0 for firms like jcinjurylaw.com. We strip it before counting/sending.
+_BOILERPLATE_PATTERNS = [
+    # Yext Knowledge Tags placeholder. The live HTML often misspells "Knowledge"
+    # (e.g. "Knolwedge"), so match the placeholder loosely from "This is a
+    # placeholder for the Yext" through "added to the website."
+    re.compile(
+        r"This is a placeholder for the Yext\b.*?added to the website\.",
+        re.I | re.S,
+    ),
+]
+
+
+def _strip_boilerplate(text: str) -> str:
+    """Remove known site-builder placeholder noise from extracted visible text
+    so it doesn't crowd out real content within the char cap."""
+    for pat in _BOILERPLATE_PATTERNS:
+        text = pat.sub(" ", text)
+    return " ".join(text.split())
+
+
+# Honorific/role markers that, when attached to a capitalized name, strongly
+# indicate an actual attorney rather than incidental Title-Case page text.
+# A name is 2-3 Title-case tokens (allowing a middle initial like "B."); kept
+# tight on purpose so the regex doesn't swallow preceding heading words like
+# "About Lawyers <Name>".
+# A name token is either a single-letter initial ("B.", "J.") or a capitalized
+# word with a lowercase tail ("Jacobs", "O'Brien", "Smith-Jones"). Crucially it
+# does NOT allow an embedded period inside a word, so a capture can't run across
+# a sentence boundary like "...Levin. Thank you" into a non-name word.
+_NAME_TOKEN = r"(?:[A-Z]\.|[A-Z][a-z]+(?:['\-][A-Za-z]+)*)"
+_NAME_CORE = _NAME_TOKEN + r"(?:\s+" + _NAME_TOKEN + r"){1,2}"
+_ESQ_NAME_RE = re.compile(r"(" + _NAME_CORE + r"),?\s+Esq\b\.?")
+_ATTORNEY_PREFIX_RE = re.compile(r"\b(?:Attorney|Atty\.?)\s+(" + _NAME_CORE + r")")
+# Names rendered as a card title immediately followed by a profile CTA — the
+# common pattern on JS-built team pages whose names lack an "Esq." suffix
+# (e.g. "Gabriel Levin View Full Profile").
+_PROFILE_CTA_RE = re.compile(
+    r"(" + _NAME_CORE + r")\s+View\s+(?:Full\s+)?(?:Profile|Bio)", re.I
+)
+
+# Tokens that signal a capture grabbed page furniture, not a person.
+_NAME_STOPWORDS = {
+    "about", "lawyers", "attorneys", "attorney", "lawyer", "team", "our",
+    "meet", "the", "esq", "law", "firm", "free", "consultation", "menu",
+    "home", "contact", "practice", "areas", "results", "reviews", "blog",
+    "injury", "personal", "accident", "view", "profile", "bio", "rest",
+}
+
+
+def _extract_jsonld_names(html: str) -> list:
+    """Parse <script type="application/ld+json"> blocks and pull the `name` of
+    any Person / Attorney / Lawyer entities. Many site-builder sites embed team
+    data as JSON-LD even when the visible cards are rendered client-side, so this
+    recovers names that aren't otherwise in the static visible text. Never raises."""
+    names = []
+    try:
+        blocks = re.findall(
+            r'<script[^>]*type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
+            html, re.I | re.S,
+        )
+    except Exception:
+        return names
+
+    def _walk(node):
+        if isinstance(node, dict):
+            t = node.get("@type")
+            types = t if isinstance(t, list) else [t]
+            if any(str(x).lower() in ("person", "attorney", "lawyer") for x in types):
+                nm = node.get("name")
+                if isinstance(nm, str) and nm.strip():
+                    names.append(" ".join(nm.split()))
+            for v in node.values():
+                _walk(v)
+        elif isinstance(node, list):
+            for v in node:
+                _walk(v)
+
+    for block in blocks:
+        try:
+            _walk(json.loads(block))
+        except Exception:
+            continue
+    return names
+
+
+def _clean_name(raw: str):
+    """Normalize a captured name and reject non-name junk. Trims leading/trailing
+    stopword tokens (e.g. 'About Lawyers Rand Spear' -> 'Rand Spear'); returns
+    None if nothing name-like remains."""
+    tokens = raw.split()
+    while tokens and tokens[0].strip(".'-").lower() in _NAME_STOPWORDS:
+        tokens.pop(0)
+    while tokens and tokens[-1].strip(".'-").lower() in _NAME_STOPWORDS:
+        tokens.pop()
+    if not (2 <= len(tokens) <= 3):
+        return None
+    name = " ".join(tokens)
+    if name.isupper():
+        return None
+    return name
+
+
+def _extract_attorney_names(text: str) -> list:
+    """Pull likely attorney names out of visible text via honorific/role markers
+    ('Jane Q. Smith, Esq.', 'Attorney John Doe') and profile-card CTAs
+    ('Gabriel Levin View Full Profile'). De-duped, order-preserving. This gives
+    the classifier clean named-attorney content to count even when the real names
+    are surrounded by navigation/marketing noise."""
+    found = []
+    for rx in (_ESQ_NAME_RE, _ATTORNEY_PREFIX_RE, _PROFILE_CTA_RE):
+        for m in rx.finditer(text):
+            found.append(" ".join(m.group(1).split()))
+    seen, out = set(), []
+    for raw in found:
+        n = _clean_name(raw)
+        if not n:
+            continue
+        key = n.lower()
+        if key not in seen:
+            seen.add(key)
+            out.append(n)
+    return out
+
+
+def _visible_text_full(html: str, drop_chrome: bool = True) -> str:
+    """Return the full (uncapped) de-boilerplated visible text of a page.
+
+    drop_chrome: when True, strips nav/footer (good for homepage focus
+    judgment). Attorney-listing pages set it False because some site builders
+    render the team list inside nav/footer-like containers, and dropping them
+    would discard the very names we're trying to count.
+    """
+    strip_tags = ["script", "style"]
+    if drop_chrome:
+        strip_tags += ["nav", "footer"]
     try:
         from bs4 import BeautifulSoup
         soup = BeautifulSoup(html, "html.parser")
-        for tag in soup(["script", "style", "nav", "footer"]):
+        for tag in soup(strip_tags):
             tag.decompose()
         text = " ".join(soup.get_text(separator=" ").split())
-        return text[:max_chars]
+        return _strip_boilerplate(text)
     except Exception:
         import re as _re
         text = _re.sub(r"<[^>]+>", " ", html)
         text = " ".join(text.split())
-        return text[:max_chars]
+        return _strip_boilerplate(text)
+
+
+def _extract_visible_text(html: str, max_chars: int = 900, drop_chrome: bool = True) -> str:
+    """Capped visible-text extraction for feeding the classifier a snippet it can
+    use to judge plaintiff-PI focus. Falls back to a crude tag strip if
+    BeautifulSoup isn't available for any reason."""
+    return _visible_text_full(html, drop_chrome=drop_chrome)[:max_chars]
 
 
 def _extract_job_titles(html: str) -> list:
@@ -136,13 +279,32 @@ def _follow_portal_links(links: list, hits: dict, pages_checked: list, errors: l
             continue
 
 
-def _scrape_attorney_pages(domain: str) -> str:
-    """Fetch attorney-listing pages and return concatenated visible text (capped),
-    giving Claude enough named-attorney content to estimate firm headcount."""
+def _scrape_attorney_pages(domain: str) -> dict:
+    """Fetch attorney-listing pages and return both concatenated visible text and
+    a de-duped list of attorney names, giving Claude clean named-attorney content
+    to estimate firm headcount.
+
+    Names are recovered two ways so JS-heavy site builders don't defeat us:
+      1. JSON-LD Person/Attorney/Lawyer entities embedded in the static HTML
+         (present even when the visible cards are rendered client-side).
+      2. Honorific/role markers ("Jane Smith, Esq.", "Attorney John Doe") in the
+         de-boilerplated visible text.
+    Returns {"text": str, "names": [str]}. Never raises (caller's try/except aside,
+    every page fetch is individually guarded)."""
     combined = []
     total = 0
+    names = []
+    seen_names = set()
+
+    def _add_names(candidates):
+        for n in candidates:
+            key = n.lower()
+            if key not in seen_names:
+                seen_names.add(key)
+                names.append(n)
+
     for path in ATTORNEY_LISTING_PATHS:
-        if total >= 4000:
+        if total >= 6000:
             break
         url = f"https://{domain}{path}"
         try:
@@ -152,15 +314,24 @@ def _scrape_attorney_pages(domain: str) -> str:
                 timeout=SITE_FETCH_TIMEOUT_SECONDS,
             )
             if resp.status_code < 400:
-                text = _extract_visible_text(resp.text, max_chars=1500)
-                if text:
-                    chunk = f"[{path}]: {text}"
+                # Keep nav/footer here: some builders render the team grid inside
+                # those containers, and the boilerplate strip + name extraction
+                # handle the resulting noise.
+                full_text = _visible_text_full(resp.text, drop_chrome=False)
+                # Extract names from the FULL page text, not the truncated snippet
+                # below — attorney cards often sit past the char cap (this is the
+                # jcinjurylaw.com failure mode: real names buried after boilerplate).
+                _add_names(_extract_jsonld_names(resp.text))
+                _add_names(_extract_attorney_names(full_text))
+                if full_text:
+                    chunk = f"[{path}]: {full_text[:2500]}"
                     combined.append(chunk)
                     total += len(chunk)
                 time.sleep(SITE_FETCH_DELAY_SECONDS)
         except requests.RequestException:
             continue
-    return "\n".join(combined)[:4000]
+
+    return {"text": "\n".join(combined)[:6000], "names": names}
 
 
 def fingerprint_site(domain: str) -> dict:
@@ -172,6 +343,7 @@ def fingerprint_site(domain: str) -> dict:
         "homepage_text_snippet": str,  # for plaintiff-PI-focus judgment downstream
         "job_titles_found": [title strings found on /careers page],
         "attorney_page_text": str,  # concatenated attorney-listing text for headcount
+        "attorney_names": [str],    # names parsed from JSON-LD + honorific markers
     }
     Never raises — a firm with an unreachable site just gets empty hits.
     """
@@ -221,7 +393,7 @@ def fingerprint_site(domain: str) -> dict:
         _follow_portal_links(portal_links, hits, pages_checked, errors)
 
     # Scrape attorney-listing pages so Claude can estimate headcount downstream.
-    attorney_page_text = _scrape_attorney_pages(domain)
+    attorney_data = _scrape_attorney_pages(domain)
 
     # Convert sets to sorted lists for clean JSON/CSV serialization downstream.
     hits = {cms: sorted(kinds) for cms, kinds in hits.items()}
@@ -231,5 +403,6 @@ def fingerprint_site(domain: str) -> dict:
         "errors": errors,
         "homepage_text_snippet": homepage_text_snippet,
         "job_titles_found": job_titles_found,
-        "attorney_page_text": attorney_page_text,
+        "attorney_page_text": attorney_data["text"],
+        "attorney_names": attorney_data["names"],
     }

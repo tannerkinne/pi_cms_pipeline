@@ -173,6 +173,15 @@ def classify_firm(firm_name: str, fingerprint_result: dict, careers_job_titles: 
         lines.append("  - none found / careers page not available")
     lines.append("")
 
+    lines.append("ATTORNEY NAMES EXTRACTED FROM LISTING PAGES (parsed from JSON-LD + honorific markers; count distinct names for est_attorneys):")
+    attorney_names = fingerprint_result.get("attorney_names", [])
+    if attorney_names:
+        for name in attorney_names[:40]:
+            lines.append(f"  - {name}")
+    else:
+        lines.append("  - (no names cleanly extracted; fall back to the listing text below)")
+    lines.append("")
+
     lines.append("ATTORNEY LISTING PAGE TEXT (count named attorneys here to estimate est_attorneys):")
     attorney_text = fingerprint_result.get("attorney_page_text", "")
     if attorney_text:
