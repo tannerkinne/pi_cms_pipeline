@@ -1,0 +1,15 @@
+# Optional "sheets" extra — push the Stage 4 deliverable to a Google Sheet.
+#
+# This is NOT part of the base install (requirements.txt). The pipeline always
+# writes data/final_output.csv and data/bonus.csv on its own. Install this only
+# if you want Stage 5 (pipeline/05_export_to_sheets.py) to mirror those CSVs to
+# a shared Google Sheet.
+#
+# Setup after installing:
+#   1. Create a Google Cloud service account, enable the Google Sheets API, and
+#      download its JSON key.
+#   2. Share your target sheet with the service account's client_email (Editor).
+#   3. Set GOOGLE_SHEETS_CREDENTIALS_FILE and GOOGLE_SHEET_ID (see .env.example),
+#      then run:  python pipeline/05_export_to_sheets.py
+#
+gspread>=6.0

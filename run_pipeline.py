@@ -50,6 +50,11 @@ def main():
     parser.add_argument("--render", choices=["off", "fallback", "always"], default="off",
                         help="Stage 2 headless-browser fallback for JS-rendered sites "
                              "(requires the optional render extra; see requirements-render.txt).")
+    parser.add_argument("--to-sheets", action="store_true",
+                        help="After Stage 4, also push final_output.csv / bonus.csv to a "
+                             "Google Sheet (requires the optional sheets extra plus "
+                             "GOOGLE_SHEET_ID + GOOGLE_SHEETS_CREDENTIALS_FILE; see "
+                             "requirements-sheets.txt). Skipped under --dry-run.")
     args = parser.parse_args()
 
     common = ["--limit", str(args.limit)]
@@ -71,6 +76,12 @@ def main():
         run_stage("03_enrich_contacts.py", common)
 
     run_stage("04_score_and_export.py", [])
+
+    # Optional Stage 5: mirror the CSVs to a Google Sheet. CSVs are already
+    # written above, so this is purely additive. Skipped under --dry-run since
+    # there's no real deliverable to publish.
+    if args.to_sheets and not args.dry_run:
+        run_stage("05_export_to_sheets.py", [])
 
     print(f"\n{'=' * 60}\nPipeline complete. See data/final_output.csv and data/bonus.csv\n{'=' * 60}")
 

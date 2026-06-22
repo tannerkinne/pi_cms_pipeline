@@ -66,6 +66,37 @@ a no-op and the static result stands. `--render` is ignored under `--dry-run`.
 The end-of-run summary reports a `playwright_render` count so you can see how
 often it actually fired.
 
+### Optional: export to Google Sheets
+
+Stage 4 always writes `data/final_output.csv` and `data/bonus.csv`. If you'd
+rather hand off a live spreadsheet, Stage 5 mirrors those CSVs to a Google Sheet
+(a `Leads` tab and a `Bonus` tab). It's behind an **optional extra**:
+
+```bash
+pip install -r requirements-sheets.txt
+```
+
+One-time setup: create a Google Cloud **service account**, enable the Google
+Sheets API, download its JSON key, and **share your target sheet with the service
+account's `client_email` as an Editor**. Then set two env vars (see `.env.example`):
+
+```bash
+GOOGLE_SHEETS_CREDENTIALS_FILE=/path/to/service-account.json
+GOOGLE_SHEET_ID=<the long id from the sheet URL: /d/<THIS>/edit>
+```
+
+Run it standalone after Stage 4, or fold it into a full run:
+
+```bash
+python pipeline/05_export_to_sheets.py            # uses the env vars above
+python run_pipeline.py --limit 200 --to-sheets    # runs Stages 1-4 then pushes
+```
+
+Each run clears and rewrites both tabs so the sheet stays in sync with the CSVs.
+`--to-sheets` is skipped under `--dry-run`, and if the extra/credentials are
+missing the step prints an actionable message and exits without touching the run's
+CSV output.
+
 ## Usage — start cheap, then scale
 
 ```bash
