@@ -22,6 +22,7 @@ from config import (
     CMS_SECONDARY_SIGNATURES,
     CMS_PORTAL_DOMAINS,
     PORTAL_LINK_HINTS,
+    CMS_INFO_LINK_HINTS,
     SITE_PATHS_TO_CHECK,
     ATTORNEY_LISTING_PATHS,
     SITE_FETCH_TIMEOUT_SECONDS,
@@ -256,11 +257,62 @@ def _find_portal_links(html: str, base_domain: str) -> list:
     return out[:3]
 
 
-def _follow_portal_links(links: list, hits: dict, pages_checked: list, errors: list):
-    """Fetch each candidate portal link one hop and scan its final (post-redirect)
-    URL + body for CMS portal-domain signals. The redirect target host is the
-    strongest possible CMS signal — e.g. a 'Client Login' that lands on
-    firmname.cloudlex.com."""
+def _find_cms_info_links(html: str, base_domain: str) -> list:
+    """Return absolute, same-domain URLs of anchors that look like an internal
+    'how we work / what software we run' page (per CMS_INFO_LINK_HINTS) — e.g. an
+    About > 'Case Management System' page or an 'Our Technology' page. Some firms
+    name their CMS only on a page like this, one hop off the homepage and outside
+    SITE_PATHS_TO_CHECK. Matched against both the visible anchor text and the href
+    (with -/_/ normalized to spaces) so 'case-management-system' in a URL matches.
+
+    Restricted to same-domain links on purpose: external CMS-vendor links are
+    already caught by _scan_for_cms on the page itself; here we only want to crawl
+    the firm's own deep page."""
+    found = []
+    try:
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html, "html.parser")
+        anchors = [(" ".join(a.get_text().split()).lower(), a.get("href", "")) for a in soup.find_all("a", href=True)]
+    except Exception:
+        anchors = []
+        for m in re.finditer(r'<a[^>]+href=["\']([^"\']+)["\'][^>]*>(.*?)</a>', html, re.I | re.S):
+            href = m.group(1)
+            label = " ".join(re.sub(r"<[^>]+>", " ", m.group(2)).split()).lower()
+            anchors.append((label, href))
+
+    for label, href in anchors:
+        if not href or href.startswith(("#", "mailto:", "tel:", "javascript:")):
+            continue
+        # Normalize href separators to spaces so URL slugs match the spaced hints.
+        href_words = re.sub(r"[-_/]+", " ", href.lower())
+        haystack = f"{label} {href_words}"
+        if not any(hint in haystack for hint in CMS_INFO_LINK_HINTS):
+            continue
+        if href.startswith("//"):
+            href = "https:" + href
+        elif href.startswith("/"):
+            href = f"https://{base_domain}{href}"
+        elif not href.startswith("http"):
+            href = f"https://{base_domain}/{href.lstrip('/')}"
+        # Same-domain only: skip anything that resolved to another host.
+        host = _normalize_domain(href)
+        if host != base_domain and not host.endswith("." + base_domain):
+            continue
+        found.append(href)
+    # De-dupe, keep order, cap to bound the follow chain.
+    seen, out = set(), []
+    for u in found:
+        if u not in seen:
+            seen.add(u)
+            out.append(u)
+    return out[:3]
+
+
+def _follow_links(links: list, hits: dict, pages_checked: list, errors: list, tag: str):
+    """Fetch each candidate link one hop and scan its final (post-redirect) URL +
+    body for CMS signatures. Used for both client-portal links (where the redirect
+    target host is the high-value signal) and internal CMS-info pages (where the
+    page body names the vendor). `tag` labels the entry in pages_checked/errors."""
     for url in links:
         try:
             resp = requests.get(
@@ -270,14 +322,21 @@ def _follow_portal_links(links: list, hits: dict, pages_checked: list, errors: l
                 allow_redirects=True,
             )
             time.sleep(SITE_FETCH_DELAY_SECONDS)
-            # The resolved URL after redirects is the high-value signal.
+            # The resolved URL after redirects is part of the signal (portal case).
             _scan_for_cms(str(resp.url), hits)
             if resp.status_code < 400:
                 _scan_for_cms(resp.text, hits)
-                pages_checked.append(f"portal:{resp.url}")
+                pages_checked.append(f"{tag}:{resp.url}")
         except requests.RequestException as e:
-            errors.append(f"portal-follow {url} -> {type(e).__name__}")
+            errors.append(f"{tag}-follow {url} -> {type(e).__name__}")
             continue
+
+
+def _follow_portal_links(links: list, hits: dict, pages_checked: list, errors: list):
+    """Follow client-login / portal links one hop — the redirect target host is the
+    strongest possible CMS signal (e.g. a 'Client Login' that lands on
+    firmname.cloudlex.com)."""
+    _follow_links(links, hits, pages_checked, errors, tag="portal")
 
 
 def _scrape_attorney_pages(domain: str) -> dict:
@@ -394,6 +453,7 @@ def fingerprint_site(domain: str, render: str = "off") -> dict:
     homepage_text_snippet = ""
     job_titles_found = []
     portal_links = []
+    cms_info_links = []
 
     for path in SITE_PATHS_TO_CHECK:
         url = f"https://{domain}{path}"
@@ -419,6 +479,10 @@ def fingerprint_site(domain: str, render: str = "off") -> dict:
             if path == "":
                 portal_links = _find_portal_links(resp.text, domain)
 
+            # Collect "case management / our technology" links from every fetched
+            # page (the nav link can appear off-homepage); deduped before following.
+            cms_info_links.extend(_find_cms_info_links(resp.text, domain))
+
             # Scan body text + the resolved URL for CMS signatures / portal domains.
             _scan_for_cms(resp.text, hits)
             _scan_for_cms(str(resp.url), hits)
@@ -431,6 +495,21 @@ def fingerprint_site(domain: str, render: str = "off") -> dict:
     # strongest CMS signal (e.g. a login that lands on firm.cloudlex.com).
     if portal_links:
         _follow_portal_links(portal_links, hits, pages_checked, errors)
+
+    # Follow internal "case management / technology" pages one hop — recovers a
+    # CMS named only on a deep about/technology page (the mr.law/Filevine case).
+    # De-dupe across pages and against pages already fetched, then cap the chain.
+    if cms_info_links:
+        already = set(pages_checked)
+        deduped = []
+        seen = set()
+        for u in cms_info_links:
+            if u in seen or u in already:
+                continue
+            seen.add(u)
+            deduped.append(u)
+        if deduped:
+            _follow_links(deduped[:3], hits, pages_checked, errors, tag="cms-info")
 
     # Scrape attorney-listing pages so Claude can estimate headcount downstream.
     attorney_data = _scrape_attorney_pages(domain)
@@ -455,6 +534,12 @@ def fingerprint_site(domain: str, render: str = "off") -> dict:
             rendered_links = _find_portal_links(home_html, domain)
             if rendered_links:
                 _follow_portal_links(rendered_links, hits, pages_checked, errors)
+            rendered_info_links = [
+                u for u in _find_cms_info_links(home_html, domain)
+                if u not in set(pages_checked)
+            ]
+            if rendered_info_links:
+                _follow_links(rendered_info_links[:3], hits, pages_checked, errors, tag="cms-info")
 
         # (2) First reachable attorney-listing path — recover client-side cards.
         #     Reuse the existing JSON-LD + name extraction; merge de-duped,

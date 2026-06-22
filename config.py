@@ -84,6 +84,20 @@ PORTAL_LINK_HINTS = [
     "login", "portal",
 ]
 
+# Anchor text / URL fragments that signal an internal "how we work / what
+# software we run" page — e.g. an About > "Case Management System" page or a
+# "Our Technology" page. Some firms name their CMS only on a page like this,
+# one click off the homepage and outside SITE_PATHS_TO_CHECK (the mr.law case:
+# Filevine named on /about-us/case-management-system/). The fingerprinter finds
+# these same-domain links on any fetched page and follows them one hop, scanning
+# the destination body for CMS signatures. Matched against the link's visible
+# text AND its href (with -/_/ normalized to spaces), so "case-management-system"
+# in a URL matches "case management".
+CMS_INFO_LINK_HINTS = [
+    "case management", "case management system", "case management software",
+    "our technology", "legal technology", "technology we use", "our software",
+]
+
 # Common subpages worth checking in addition to the homepage. Many firms
 # expose client-portal links from contact/intake pages, not the homepage.
 SITE_PATHS_TO_CHECK = ["", "/contact", "/contact-us", "/careers", "/intake", "/client-portal", "/login", "/client-login"]

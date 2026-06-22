@@ -1,7 +1,10 @@
 # API keys — never commit
 .env
 
-# Pipeline output (intermediate + final data files)
+# Pipeline output (intermediate + final data files), incl. any subfolders
+# (e.g. data/_prev_run_backup/) — match recursively, not just the top level.
+data/**/*.csv
+data/**/*.jsonl
 data/*.csv
 data/*.jsonl
 
