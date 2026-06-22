@@ -88,6 +88,10 @@ _NAME_STOPWORDS = {
     "meet", "the", "esq", "law", "firm", "free", "consultation", "menu",
     "home", "contact", "practice", "areas", "results", "reviews", "blog",
     "injury", "personal", "accident", "view", "profile", "bio", "rest",
+    # Marketing/page-furniture words seen leaking into name captures
+    # (e.g. "Advertising Ross Cellino" -> "Ross Cellino").
+    "advertising", "testimonials", "verdicts", "settlements", "espanol",
+    "news", "media", "press", "careers", "page", "us",
 }
 
 
@@ -164,6 +168,56 @@ def _extract_attorney_names(text: str) -> list:
             seen.add(key)
             out.append(n)
     return out
+
+
+def _name_from_profile_slug(slug: str):
+    """Turn an attorney-profile URL slug ('ross-cellino', 'daniel-lipner-2')
+    into a clean 'First Last' name, or None if it doesn't look like a person.
+    Trailing numeric disambiguators ('-2') are dropped; every remaining segment
+    must be alphabetic, and the result is validated through _clean_name (so
+    practice-area slugs like 'personal-injury' get rejected via the stopwords)."""
+    parts = [p for p in slug.split("-") if p]
+    while parts and parts[-1].isdigit():
+        parts.pop()
+    if not (2 <= len(parts) <= 3):
+        return None
+    if any(not p.isalpha() for p in parts):
+        return None
+    return _clean_name(" ".join(p.capitalize() for p in parts))
+
+
+def _extract_profile_link_names(html: str) -> list:
+    """Recover attorney names from profile-link URL slugs — the most common way
+    firm sites list a team: anchors like <a href="/attorneys/ross-cellino/">.
+    A name is taken only when the link's second-to-last path segment is one of the
+    attorney-listing path names (e.g. 'attorneys', 'our-team') and the last segment
+    is a 'first-last' slug. This catches teams that the honorific/CTA/JSON-LD
+    extractors miss entirely (the cellinolaw.com failure: 34 attorneys, all linked
+    as /attorneys/<slug>/ with no 'Esq.' text)."""
+    base = {p.strip("/").lower() for p in ATTORNEY_LISTING_PATHS if p.strip("/")}
+    out = []
+    for href in re.findall(r'href=["\']([^"\']+)["\']', html, re.I):
+        path = re.sub(r"^https?://[^/]+", "", href.lower()).split("?")[0].split("#")[0]
+        segs = [s for s in path.split("/") if s]
+        if len(segs) < 2 or segs[-2] not in base:
+            continue
+        nm = _name_from_profile_slug(segs[-1])
+        if nm:
+            out.append(nm)
+    return out
+
+
+def _names_from_page(html: str, full_text: str) -> list:
+    """All attorney-name sources for one page, in priority order:
+      1. JSON-LD Person/Attorney/Lawyer entities (cleaned — raw JSON-LD names can
+         be admin usernames like 'tshadduck', so they must pass _clean_name too).
+      2. Honorific/role/CTA markers in the visible text.
+      3. Profile-link URL slugs (/attorneys/<first>-<last>/).
+    Returned with duplicates allowed; the caller de-dupes order-preserving."""
+    names = [n for n in (_clean_name(x) for x in _extract_jsonld_names(html)) if n]
+    names += _extract_attorney_names(full_text)
+    names += _extract_profile_link_names(html)
+    return names
 
 
 def _visible_text_full(html: str, drop_chrome: bool = True) -> str:
@@ -381,8 +435,9 @@ def _scrape_attorney_pages(domain: str) -> dict:
                 # Extract names from the FULL page text, not the truncated snippet
                 # below — attorney cards often sit past the char cap (this is the
                 # jcinjurylaw.com failure mode: real names buried after boilerplate).
-                _add_names(_extract_jsonld_names(resp.text))
-                _add_names(_extract_attorney_names(full_text))
+                # _names_from_page covers JSON-LD + honorific text + profile-link
+                # slugs (the cellinolaw.com failure mode).
+                _add_names(_names_from_page(resp.text, full_text))
                 if full_text:
                     chunk = f"[{path}]: {full_text[:2500]}"
                     combined.append(chunk)
@@ -553,7 +608,7 @@ def fingerprint_site(domain: str, render: str = "off") -> dict:
             rendered = True
             pages_checked.append(f"rendered:{att_url}")
             full_text = _visible_text_full(att_html, drop_chrome=False)
-            for n in _extract_jsonld_names(att_html) + _extract_attorney_names(full_text):
+            for n in _names_from_page(att_html, full_text):
                 key = n.lower()
                 if key not in seen_names:
                     seen_names.add(key)
