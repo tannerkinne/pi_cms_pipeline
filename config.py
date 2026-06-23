@@ -57,9 +57,20 @@ CMS_SITE_SIGNATURES = {
 }
 
 # Secondary/weaker signals — if these fire ALONE (without the primary string
-# above), treat as Low confidence only, never High.
+# above), treat as Low confidence only, never High. Litify is Salesforce-native,
+# so a Salesforce *app* host can hint at it — but the bare strings we used before
+# were dangerously noisy and produced confirmed false positives:
+#   - "salesforce" also matches Font Awesome's ".fa-salesforce" icon class
+#     (mydelawarelawyer.com) and Web-to-Lead marketing-form JS (ethenostrofflaw.com).
+#   - "force.com" is a SUBSTRING of "salesforce.com", so it fired on every
+#     *.salesforce.com URL (e.g. webto.salesforce.com Web-to-Lead endpoints),
+#     none of which imply the firm runs Litify.
+# Keep only "lightning.force.com" — the actual Salesforce Lightning app domain,
+# which at least indicates a real Salesforce org rather than a marketing embed.
+# Even this stays a Low-confidence SECONDARY signal, and a secondary-ONLY hit is
+# suppressed to Unknown downstream (see claude_classifier._suppress_secondary_only).
 CMS_SECONDARY_SIGNATURES = {
-    "Litify": ["force.com", "lightning.force.com", "salesforce"],
+    "Litify": ["lightning.force.com"],
 }
 
 # Domains that CMS vendors host client portals / client logins on. Finding any

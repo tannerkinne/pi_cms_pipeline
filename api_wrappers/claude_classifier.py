@@ -34,8 +34,12 @@ casepeer.com). A portal_link signal alone justifies High confidence.
 widgets) is strong evidence (Medium/High).
 - A CMS name mentioned in a job title or careers page (e.g. "experience with Filevine required") is strong evidence.
 - A CMS name only appearing in a generic/unrelated web search snippet is weak evidence (Low).
-- Litify is built on Salesforce — "force.com" or "salesforce" alone ("secondary" signal), without the \
-word "litify" itself, is only weak/Low-confidence evidence, never High.
+- Litify is built on Salesforce, so a Salesforce app marker (a "secondary" signal) MIGHT indicate Litify — \
+but ONLY if corroborated. A secondary signal ALONE — without the word "litify" itself in the firm's own site \
+source, a portal_link resolving to a Litify host, a careers/job mention of Litify, or a web snippet naming \
+Litify — is NOT sufficient to name the CMS: return "Unknown" in that case, never "Litify". Salesforce markers \
+appear on many firm sites that do not run Litify (marketing form embeds, Salesforce-branded icon fonts), so \
+never name a CMS off a secondary signal alone.
 - Evidence-type precedence, strongest to weakest: portal_link > primary site source / careers page > \
 generic web mention > Salesforce-only secondary signal.
 - If evidence is contradictory (e.g. two different CMS names both mentioned), prefer the one with the \
@@ -143,6 +147,48 @@ def _validate(parsed: dict) -> dict:
     }
 
 
+def _suppress_secondary_only(result: dict, fingerprint_result: dict,
+                             careers_job_titles: list, exa_evidence: list) -> dict:
+    """Deterministic backstop for the prompt rule above: if the model named a CMS
+    whose ONLY site-fingerprint signal is "secondary" (Salesforce markers, which
+    also fire on Web-to-Lead forms and the .fa-salesforce icon class) AND nothing
+    else corroborates that CMS, downgrade it to Unknown.
+
+    A named CMS at Low confidence pollutes the target list worse than an honest
+    Unknown, and we don't want correctness to depend on model variance. Corroboration
+    = the CMS name appearing in a careers job title or an Exa snippet. If the chosen
+    CMS has a "primary"/"portal_link" hit, or no fingerprint hit at all (the model
+    inferred it from other evidence), this is a no-op.
+    """
+    cms = result.get("cms_detected", "Unknown")
+    if cms == "Unknown":
+        return result
+    hits = (fingerprint_result or {}).get("hits", {}) or {}
+    kinds = set(hits.get(cms, []))
+    # Only act when the CMS's sole fingerprint evidence is a secondary signal.
+    if kinds != {"secondary"}:
+        return result
+    needle = cms.lower()
+    corroborated = any(needle in (t or "").lower() for t in (careers_job_titles or []))
+    if not corroborated:
+        for ev in (exa_evidence or []):
+            blob = f"{ev.get('title', '')} {ev.get('text', '')}".lower()
+            if needle in blob:
+                corroborated = True
+                break
+    if corroborated:
+        return result
+    result = dict(result)
+    result["cms_detected"] = "Unknown"
+    result["cms_confidence"] = "Low"
+    result["cms_evidence"] = (
+        f"Suppressed {cms}: the only evidence was an indirect Salesforce/secondary "
+        f"marker (no {cms} branding, portal link, careers mention, or web corroboration). "
+        f"Salesforce markers also appear on non-{cms} sites, so treated as Unknown."
+    )
+    return result
+
+
 def classify_firm(firm_name: str, fingerprint_result: dict, careers_job_titles: list,
                    exa_evidence: list) -> dict:
     """
@@ -198,4 +244,5 @@ def classify_firm(firm_name: str, fingerprint_result: dict, careers_job_titles: 
         lines.append("  - none found / not available")
 
     evidence_text = "\n".join(lines)
-    return _call_claude(evidence_text)
+    result = _call_claude(evidence_text)
+    return _suppress_secondary_only(result, fingerprint_result, careers_job_titles, exa_evidence)
