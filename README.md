@@ -183,6 +183,16 @@ firm's own domain AND its local-part matches the decision-maker's name (e.g.
 or third-party address. Junk domains are filtered via `EMAIL_SCRAPE_DENYLIST_DOMAINS`
 in `config.py`. This step is free (no API spend).
 
+Stage 3 also **renders JS-heavy team/contact pages by default** (`--render fallback`):
+when a static fetch comes back empty or low-signal, it re-fetches via headless
+Chromium (reusing Stage 2's Playwright path) so client-side-rendered team rosters
+yield a name and email. And it **completes first-name-only results to full names**
+using the firm's own page — Stage 2's attorney-name extractor (JSON-LD, honorific
+text, `/attorneys/<first>-<last>` profile slugs) — which in turn unlocks more
+Apollo and website email matches. Disable rendering with `--render off` on Stage 3
+(or `--no-render` on `run_pipeline.py`); both degrade safely to static if Playwright
+isn't installed.
+
 ## Known caveats to sanity-check before trusting the output
 
 - **`est_attorneys` is blank for all rows.** Google Places doesn't expose headcount.

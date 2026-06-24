@@ -21,6 +21,7 @@ import requests
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import site_fingerprint
 from api_wrappers import apollo_client, cost_tracker
 from config import (CONTACT_PATHS_TO_CHECK, CLAUDE_MODEL, SITE_FETCH_TIMEOUT_SECONDS,
                     USER_AGENT, APOLLO_RATE_LIMIT_DELAY_SECONDS, SITE_FETCH_DELAY_SECONDS,
@@ -82,19 +83,79 @@ def _fetch_url(url: str) -> str:
     return ""
 
 
-def _fetch_contact_page(domain: str) -> tuple:
+def _names_on_page(html: str) -> list:
+    """Order-preserving, de-duped attorney names on a page, via Stage 2's
+    multi-source extractor (JSON-LD + honorific text + /attorneys/<slug> links)."""
+    if not html:
+        return []
+    try:
+        full = site_fingerprint._visible_text_full(html)
+        raw = site_fingerprint._names_from_page(html, full)
+    except Exception:
+        return []
+    seen, out = set(), []
+    for n in raw:
+        k = (n or "").lower()
+        if k and k not in seen:
+            seen.add(k)
+            out.append(n)
+    return out
+
+
+def _page_signal(html: str) -> int:
+    """Rough usefulness of a page for Stage 3: how many attorney names + emails
+    it yields. Used to decide whether a headless render beats the static fetch."""
+    if not html:
+        return 0
+    return len(_names_on_page(html)) + len(_extract_emails_from_html(html))
+
+
+def _fetch_contact_page(domain: str, render: str = "fallback") -> tuple:
     """
     Try each path in CONTACT_PATHS_TO_CHECK and return (page_text, url, html) for
     the first one that succeeds. Returns ("", "", "") if none are reachable. The
     raw HTML is returned alongside the visible text so the email scraper can read
     mailto: hrefs (which visible-text extraction drops).
+
+    render ('off' | 'fallback' | 'always') controls a headless-browser pass that
+    reuses site_fingerprint._render_html (Playwright). 'fallback' (the default)
+    renders only when the static result is low-signal — no page reached, or a page
+    with zero attorney names and zero emails (the JS-rendered-shell case). The
+    rendered HTML is used only when it strictly improves the name+email signal, so
+    a failed/empty render never degrades the static result. Safe with no
+    Playwright installed (_render_html returns None → static behavior).
     """
+    static_text, static_url, static_html = "", "", ""
     for path in CONTACT_PATHS_TO_CHECK:
         url = f"https://{domain}{path}"
         html = _fetch_url(url)
         if html:
-            return _extract_visible_text(html), url, html
-    return "", "", ""
+            static_text, static_url, static_html = _extract_visible_text(html), url, html
+            break
+
+    if render == "off":
+        return static_text, static_url, static_html
+
+    should_render = render == "always" or (render == "fallback" and _page_signal(static_html) == 0)
+    if not should_render:
+        return static_text, static_url, static_html
+
+    # Render candidates: the reachable team page first, else the top contact paths,
+    # then the homepage. Cap attempts so a batch stays bounded.
+    candidates = ([static_url] if static_url else []) \
+        + [f"https://{domain}{p}" for p in CONTACT_PATHS_TO_CHECK[:3]] \
+        + [f"https://{domain}"]
+    tried = set()
+    for url in candidates:
+        if not url or url in tried:
+            continue
+        tried.add(url)
+        rhtml = site_fingerprint._render_html(url)
+        if rhtml and _page_signal(rhtml) > _page_signal(static_html):
+            return _extract_visible_text(rhtml), url, rhtml
+        if len(tried) >= 2:
+            break
+    return static_text, static_url, static_html
 
 
 def _migrate_contacts_schema():
@@ -318,6 +379,62 @@ def _scrape_named_email(domain: str, name: str, primary_html: str) -> str:
     return ""
 
 
+def _find_bio_link_by_first(html: str, first: str, domain: str):
+    """Same-domain attorney profile link whose URL slug's first token matches the
+    given first name (used to complete a first-name-only decision-maker). None if
+    no such link."""
+    if not html or not first:
+        return None
+    f = re.sub(r"[^a-z]", "", first.lower())
+    if not f:
+        return None
+    fdom = _norm_domain(domain)
+    base = {p.strip("/").lower() for p in CONTACT_PATHS_TO_CHECK if p.strip("/")}
+    base |= {"attorneys", "our-team", "team", "our-attorneys", "lawyers", "people"}
+    for href in re.findall(r'href=["\']([^"\']+)["\']', html, re.I):
+        full = urljoin(f"https://{domain}/", href.strip())
+        if _norm_domain(urlparse(full).netloc) != fdom:
+            continue
+        segs = [s for s in urlparse(full).path.lower().split("/") if s]
+        if len(segs) < 2 or segs[-2] not in base:
+            continue
+        slug_first = re.sub(r"[^a-z]", "", segs[-1].split("-")[0])
+        if slug_first == f:
+            return full
+    return None
+
+
+def _complete_name(name: str, html: str, domain: str) -> str:
+    """Upgrade a first-name-only decision-maker to a full 'First Last' using the
+    firm's own page — Stage 2's name extractor over the team page, then one hop
+    into the person's profile page if needed. Returns the original name if it
+    already has a surname or no full match is found (never fabricates a name)."""
+    if _has_surname(name):
+        return name
+    first = _split_name(name)[0]
+    if not first:
+        return name
+    fl = first.lower()
+
+    def _first_match(candidates):
+        for cand in candidates:
+            toks = cand.split()
+            if len(toks) >= 2 and toks[0].lower() == fl:
+                return cand
+        return ""
+
+    hit = _first_match(_names_on_page(html))
+    if hit:
+        return hit
+
+    bio = _find_bio_link_by_first(html, first, domain)
+    if bio:
+        hit = _first_match(_names_on_page(_fetch_url(bio)))
+        if hit:
+            return hit
+    return name
+
+
 def _extract_contact_claude(page_text: str) -> dict:
     import anthropic
     api_key = os.environ.get("ANTHROPIC_API_KEY")
@@ -360,6 +477,11 @@ def main():
     parser.add_argument("--only", default="",
                         help="Comma-separated domains to (re)process — overwrites just those "
                              "rows and ignores --limit. Implies --force. Useful for sampling.")
+    parser.add_argument("--render", choices=["off", "fallback", "always"], default="fallback",
+                        help="Headless-browser (Playwright) rendering for JS team/contact pages. "
+                             "'fallback' (default) renders only when the static fetch is empty/"
+                             "low-signal; 'always' renders every firm; 'off' disables it. Safe "
+                             "with no Playwright installed (degrades to static).")
     args = parser.parse_args()
 
     os.makedirs(DATA_DIR, exist_ok=True)
@@ -424,7 +546,7 @@ def main():
                 "decision_maker_note": "dry-run mock",
             }
         else:
-            page_text, page_url, page_html = _fetch_contact_page(domain)
+            page_text, page_url, page_html = _fetch_contact_page(domain, render=args.render)
             counter.tick("site_fetch_contact_page (free)", 1)
 
             if not page_text:
@@ -436,6 +558,15 @@ def main():
             else:
                 scrape_contact = _extract_contact_claude(page_text)
                 counter.tick("claude_contact_extraction", 1)
+                # Complete a first-name-only result to a full name using the
+                # firm's own page (JSON-LD / honorific text / profile-link slugs),
+                # so it flows into Apollo + website email lookups.
+                before = scrape_contact["decision_maker_name"]
+                completed = _complete_name(before, page_html, domain)
+                if completed != before:
+                    scrape_contact["decision_maker_name"] = completed
+                    counter.tick("surname_completed", 1)
+                    print(f"    [name] completed {before!r} -> {completed!r}")
 
             # Website scrape is the PRIMARY source — a firm's own team/about page
             # is the most up-to-date record of who runs the practice. Apollo is a

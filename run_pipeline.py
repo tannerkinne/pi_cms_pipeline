@@ -54,6 +54,10 @@ def main():
     parser.add_argument("--render", choices=["off", "fallback", "always"], default="off",
                         help="Stage 2 headless-browser fallback for JS-rendered sites "
                              "(requires the optional render extra; see requirements-render.txt).")
+    parser.add_argument("--no-render", action="store_true",
+                        help="Disable Stage 3's contact-scrape rendering, which is ON by default "
+                             "(fallback mode — renders only JS/empty team pages). Use this to run "
+                             "Stage 3 static-only.")
     parser.add_argument("--to-sheets", action="store_true",
                         help="After Stage 4, also push final_output.csv / bonus.csv to a "
                              "Google Sheet (requires the optional sheets extra plus "
@@ -82,7 +86,12 @@ def main():
     run_stage("02_detect_cms.py", stage2_args)
 
     if not args.skip_contacts:
-        run_stage("03_enrich_contacts.py", common)
+        # Stage 3 renders JS-rendered team/contact pages by default (fallback);
+        # --no-render forces static-only. Skipped under --dry-run (no real fetches).
+        stage3_args = list(common)
+        if args.no_render and not args.dry_run:
+            stage3_args += ["--render", "off"]
+        run_stage("03_enrich_contacts.py", stage3_args)
 
     run_stage("04_score_and_export.py", [])
 
