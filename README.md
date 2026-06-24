@@ -174,6 +174,15 @@ firms are skipped), and calls are spaced by `APOLLO_RATE_LIMIT_DELAY_SECONDS`
 (default 1.0s). If `APOLLO_API_KEY` is unset, Stage 3 still runs and just leaves
 the email column blank.
 
+When Apollo has no verified email, Stage 3 falls back to **scraping the firm's own
+website** for the decision-maker's published address — checking the team/about
+page, the person's individual bio page (one same-domain hop), and the
+homepage/contact pages. A scraped email is accepted **only** when it's on the
+firm's own domain AND its local-part matches the decision-maker's name (e.g.
+`dkwartler@kmfirm.com`), so it's always the actual person, never a generic inbox
+or third-party address. Junk domains are filtered via `EMAIL_SCRAPE_DENYLIST_DOMAINS`
+in `config.py`. This step is free (no API spend).
+
 ## Known caveats to sanity-check before trusting the output
 
 - **`est_attorneys` is blank for all rows.** Google Places doesn't expose headcount.

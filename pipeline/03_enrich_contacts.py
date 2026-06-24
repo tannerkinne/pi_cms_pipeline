@@ -15,6 +15,7 @@ import os
 import re
 import sys
 import time
+from urllib.parse import urljoin, urlparse
 
 import requests
 
@@ -22,7 +23,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from api_wrappers import apollo_client, cost_tracker
 from config import (CONTACT_PATHS_TO_CHECK, CLAUDE_MODEL, SITE_FETCH_TIMEOUT_SECONDS,
-                    USER_AGENT, APOLLO_RATE_LIMIT_DELAY_SECONDS)
+                    USER_AGENT, APOLLO_RATE_LIMIT_DELAY_SECONDS, SITE_FETCH_DELAY_SECONDS,
+                    EMAIL_SCRAPE_DENYLIST_DOMAINS, EMAIL_SCRAPE_FIRMWIDE_PATHS)
 from utils import (DATA_DIR, read_csv_rows, append_csv_row, already_processed_keys,
                    write_csv_rows, CallCounter)
 
@@ -64,25 +66,35 @@ def _extract_visible_text(html: str, max_chars: int = 1200) -> str:
         return " ".join(text.split())[:max_chars]
 
 
+def _fetch_url(url: str) -> str:
+    """GET a URL and return its raw HTML, or '' on any failure. Polite delay on success."""
+    try:
+        resp = requests.get(
+            url,
+            headers={"User-Agent": USER_AGENT},
+            timeout=SITE_FETCH_TIMEOUT_SECONDS,
+        )
+        if resp.status_code < 400:
+            time.sleep(0.5)
+            return resp.text
+    except requests.RequestException:
+        pass
+    return ""
+
+
 def _fetch_contact_page(domain: str) -> tuple:
     """
-    Try each path in CONTACT_PATHS_TO_CHECK and return (page_text, url) for the
-    first one that succeeds. Returns ("", "") if none are reachable.
+    Try each path in CONTACT_PATHS_TO_CHECK and return (page_text, url, html) for
+    the first one that succeeds. Returns ("", "", "") if none are reachable. The
+    raw HTML is returned alongside the visible text so the email scraper can read
+    mailto: hrefs (which visible-text extraction drops).
     """
     for path in CONTACT_PATHS_TO_CHECK:
         url = f"https://{domain}{path}"
-        try:
-            resp = requests.get(
-                url,
-                headers={"User-Agent": USER_AGENT},
-                timeout=SITE_FETCH_TIMEOUT_SECONDS,
-            )
-            if resp.status_code < 400:
-                time.sleep(0.5)
-                return _extract_visible_text(resp.text), url
-        except requests.RequestException:
-            continue
-    return "", ""
+        html = _fetch_url(url)
+        if html:
+            return _extract_visible_text(html), url, html
+    return "", "", ""
 
 
 def _migrate_contacts_schema():
@@ -159,6 +171,151 @@ def _enrich_email(decision_maker_name: str, domain: str, apollo_enabled: bool) -
         # Politeness delay between Apollo calls regardless of outcome.
         time.sleep(APOLLO_RATE_LIMIT_DELAY_SECONDS)
     return result["email"] if result else ""
+
+
+# --- Website email scraping (fallback when Apollo has no verified email) -----
+# We accept a scraped address ONLY when it is on the firm's own domain AND its
+# local-part matches the decision-maker's name — so every accepted email is the
+# actual person, never a generic inbox or third-party address.
+
+_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
+# Pseudo-"TLDs" that are really file extensions (e.g. "logo@2x.png") — never email.
+_FAKE_TLDS = {"png", "jpg", "jpeg", "gif", "svg", "webp", "css", "js", "ico",
+              "bmp", "tiff", "woff", "woff2", "mp4", "pdf"}
+
+
+def _norm_domain(d: str) -> str:
+    d = (d or "").strip().lower()
+    d = d.replace("http://", "").replace("https://", "").split("/")[0]
+    return d[4:] if d.startswith("www.") else d
+
+
+def _extract_emails_from_html(html: str) -> set:
+    """Candidate emails from mailto: hrefs + body text, lowercased and filtered
+    against the denylist / file-extension pseudo-TLDs. No name/domain gating yet."""
+    if not html:
+        return set()
+    raw = set()
+    for m in re.finditer(r'mailto:([^"\'?>\s]+)', html, re.I):
+        raw.add(m.group(1))
+    for m in _EMAIL_RE.finditer(html):
+        raw.add(m.group(0))
+    out = set()
+    for e in raw:
+        e = e.strip().strip(".").lower()
+        local, _, dom = e.partition("@")
+        if not local or not dom or "." not in dom:
+            continue
+        if dom.rsplit(".", 1)[-1] in _FAKE_TLDS:
+            continue
+        if dom in EMAIL_SCRAPE_DENYLIST_DOMAINS:
+            continue
+        out.add(f"{local}@{dom}")
+    return out
+
+
+def _email_on_firm_domain(email_domain: str, firm_domain: str) -> bool:
+    e, f = _norm_domain(email_domain), _norm_domain(firm_domain)
+    if not e or not f:
+        return False
+    return e == f or e.endswith("." + f) or f.endswith("." + e)
+
+
+def _name_localpart_score(local: str, first: str, last: str) -> int:
+    """Higher = stronger name match between an email local-part and a person.
+    0 = no match. Last-name signals outrank first-name-only signals."""
+    loc = re.sub(r"[^a-z]", "", (local or "").lower())
+    f = re.sub(r"[^a-z]", "", (first or "").lower())
+    l = re.sub(r"[^a-z]", "", (last or "").lower())
+    if not loc:
+        return 0
+    if l and len(l) >= 3:
+        fi = f[:1] if f else ""
+        exact = {l, f + l, l + f, fi + l, l + fi}
+        if loc in exact:
+            return 5
+        if l in loc:
+            return 4
+    # Initials pattern on the firm domain (e.g. "gp" for Greg Prosmushkin).
+    # Short, so only an exact match counts; the firm-domain gate makes it safe.
+    if f and l and loc == f[:1] + l[:1]:
+        return 3
+    if f and len(f) >= 3:
+        if loc == f:
+            return 3
+        if f in loc:
+            return 2
+    return 0
+
+
+def _match_named_email(emails: set, name: str, firm_domain: str) -> str:
+    """Best on-firm-domain, name-matched email from a candidate set, or ''."""
+    first, last = _split_name(name)
+    if not (first or last):
+        return ""
+    best, best_score = "", 0
+    for e in emails:
+        local, _, dom = e.partition("@")
+        if not _email_on_firm_domain(dom, firm_domain):
+            continue
+        s = _name_localpart_score(local, first, last)
+        if s > best_score:
+            best, best_score = e, s
+    return best
+
+
+def _find_bio_link(html: str, name: str, domain: str):
+    """Same-domain URL of the decision-maker's own profile/bio page, or None.
+    Matches an <a> whose visible text or href slug contains the person's surname."""
+    if not html:
+        return None
+    _, last = _split_name(name)
+    l = re.sub(r"[^a-z]", "", (last or "").lower())
+    if not l or len(l) < 3:
+        return None
+    try:
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html, "html.parser")
+    except Exception:
+        return None
+    fdom = _norm_domain(domain)
+    for a in soup.find_all("a", href=True):
+        text = re.sub(r"[^a-z]", "", a.get_text(" ").lower())
+        slug = re.sub(r"[^a-z]", "", a["href"].lower())
+        if l in text or l in slug:
+            full = urljoin(f"https://{domain}/", a["href"].strip())
+            if _norm_domain(urlparse(full).netloc) == fdom:
+                return full
+    return None
+
+
+def _scrape_named_email(domain: str, name: str, primary_html: str) -> str:
+    """Find the decision-maker's published email on the firm site, or ''.
+
+    Order, stopping at the first name-matched on-domain address:
+      1. the already-fetched team/about page,
+      2. the decision-maker's own bio page (one same-domain hop) — where attorney
+         emails most often live,
+      3. firm-wide pages (homepage, /contact, /contact-us).
+    """
+    if not _has_surname(name) and not _split_name(name)[0]:
+        return ""
+    hit = _match_named_email(_extract_emails_from_html(primary_html), name, domain)
+    if hit:
+        return hit
+
+    bio_url = _find_bio_link(primary_html, name, domain)
+    if bio_url:
+        hit = _match_named_email(_extract_emails_from_html(_fetch_url(bio_url)), name, domain)
+        if hit:
+            return hit
+
+    for path in EMAIL_SCRAPE_FIRMWIDE_PATHS:
+        hit = _match_named_email(
+            _extract_emails_from_html(_fetch_url(f"https://{domain}{path}")), name, domain)
+        if hit:
+            return hit
+    return ""
 
 
 def _extract_contact_claude(page_text: str) -> dict:
@@ -267,7 +424,7 @@ def main():
                 "decision_maker_note": "dry-run mock",
             }
         else:
-            page_text, page_url = _fetch_contact_page(domain)
+            page_text, page_url, page_html = _fetch_contact_page(domain)
             counter.tick("site_fetch_contact_page (free)", 1)
 
             if not page_text:
@@ -323,6 +480,15 @@ def main():
                 elif apollo_enabled and new_name:
                     counter.tick("apollo_email_match (miss)", 1)
                     print(f"    [miss] no verified Apollo email for {new_name}")
+
+                # Fallback: scrape the firm's own site for the decision-maker's
+                # published email (name-matched, on firm domain only). Free, and
+                # the most authoritative source when Apollo has nothing.
+                if not email and new_name:
+                    email = _scrape_named_email(domain, new_name, page_html)
+                    if email:
+                        counter.tick("website_email (hit)", 1)
+                        print(f"    [web] scraped {new_name} -> {email}")
 
             row = {"domain": domain, "decision_maker_email": email, **contact}
 

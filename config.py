@@ -156,6 +156,23 @@ ATTORNEY_LISTING_PATHS = ["/attorneys", "/our-team", "/team", "/our-attorneys", 
 # Pages to check when scraping for decision-maker contacts.
 CONTACT_PATHS_TO_CHECK = ["/attorneys", "/our-team", "/team", "/our-attorneys", "/about-us", "/about"]
 
+# Firm-wide pages worth scanning for a published attorney email when the team
+# page and the decision-maker's own bio page didn't yield one (Stage 3 email
+# scrape fallback). Kept small to bound extra fetches.
+EMAIL_SCRAPE_FIRMWIDE_PATHS = ["", "/contact", "/contact-us"]
+
+# Email domains to ignore when scraping firm websites for a decision-maker's
+# email (Stage 3). The firm-domain + name-match gate already excludes almost all
+# noise, but this is a cheap early filter for embeds, trackers, asset hosts, and
+# site-builder boilerplate that occasionally appear in mailto:/page text.
+EMAIL_SCRAPE_DENYLIST_DOMAINS = {
+    "example.com", "example.org", "email.com", "domain.com", "yourdomain.com",
+    "sentry.io", "sentry-cdn.com", "wix.com", "wixpress.com", "squarespace.com",
+    "godaddy.com", "secureserver.net", "schema.org", "w3.org", "sentry.wixpress.com",
+    "googleapis.com", "gstatic.com", "google.com", "cloudflare.com", "jsdelivr.net",
+    "fontawesome.com", "cloudflareinsights.com", "ggpht.com", "sentry-next.wixpress.com",
+}
+
 # Job titles that signal the intake/records/case-manager hiring pattern
 # called out in the brief as the most reliable CMS-detection signal.
 HIRING_SIGNAL_TITLES = [
