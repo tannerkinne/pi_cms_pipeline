@@ -30,7 +30,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import site_fingerprint
 from api_wrappers import claude_classifier, exa_client, cost_tracker
-from utils import DATA_DIR, read_csv_rows, append_csv_row, already_processed_keys, CallCounter
+from utils import (DATA_DIR, read_csv_rows, append_csv_row, write_csv_rows,
+                   already_processed_keys, CallCounter)
 
 INPUT_PATH = os.path.join(DATA_DIR, "firms_raw.csv")
 OUTPUT_PATH = os.path.join(DATA_DIR, "cms_results.csv")
@@ -69,6 +70,12 @@ def main():
                              "'off' (default) = static only; 'fallback' = render only low-signal "
                              "firms; 'always' = render every firm (debug). Requires the optional "
                              "render extra (requirements-render.txt). Never used in --dry-run.")
+    parser.add_argument("--rerender-unknowns", action="store_true",
+                        help="Targeted quality pass: reprocess ONLY firms already classified "
+                             "'Unknown' in cms_results.csv, with rendering on, overwriting their "
+                             "rows. Spends render time only where static detection found no CMS — "
+                             "the cheap way to chase JS-injected portal links. Implies --render "
+                             "always unless --render is given explicitly.")
     args = parser.parse_args()
 
     os.makedirs(DATA_DIR, exist_ok=True)
@@ -78,11 +85,29 @@ def main():
         print(f"No firms found in {INPUT_PATH} — run Stage 1 first.")
         return
 
-    done_domains = already_processed_keys(OUTPUT_PATH, "domain")
     counter = CallCounter()
+    render_mode = args.render
 
-    todo = [f for f in firms if f["domain"] not in done_domains][: args.limit]
-    print(f"Stage 2: processing {len(todo)} firms ({len(done_domains)} already done, skipped).")
+    if args.rerender_unknowns:
+        # Targeted quality pass: reprocess only the firms currently classified
+        # 'Unknown' (static detection found no CMS), with rendering on. Drop their
+        # rows up front so the fresh rows replace them (no duplicates), mirroring
+        # Stage 3's --force upsert. Forces render on if the caller left it 'off'.
+        if render_mode == "off":
+            render_mode = "always"
+        existing = read_csv_rows(OUTPUT_PATH)
+        unknown_domains = {r["domain"] for r in existing
+                           if (r.get("cms_detected") or "").strip() == "Unknown"}
+        todo = [f for f in firms if f["domain"] in unknown_domains][: args.limit]
+        todo_domains = {f["domain"] for f in todo}
+        retained = [r for r in existing if r["domain"] not in todo_domains]
+        write_csv_rows(OUTPUT_PATH, retained, FIELDNAMES, mode="w")
+        print(f"Stage 2 [rerender-unknowns]: reprocessing {len(todo)} Unknown firms "
+              f"with render='{render_mode}' (overwriting their rows).")
+    else:
+        done_domains = already_processed_keys(OUTPUT_PATH, "domain")
+        todo = [f for f in firms if f["domain"] not in done_domains][: args.limit]
+        print(f"Stage 2: processing {len(todo)} firms ({len(done_domains)} already done, skipped).")
 
     for i, firm in enumerate(todo, 1):
         domain = firm["domain"]
@@ -94,7 +119,7 @@ def main():
             ev = _mock_evidence(firm_name)
             counter.tick("dry_run_mock_evidence", 1)
         else:
-            fingerprint = site_fingerprint.fingerprint_site(domain, render=args.render)
+            fingerprint = site_fingerprint.fingerprint_site(domain, render=render_mode)
             counter.tick("site_fetch (free)", len(fingerprint.get("pages_checked", [])) + len(fingerprint.get("errors", [])))
             if fingerprint.get("rendered"):
                 counter.tick("playwright_render", 1)

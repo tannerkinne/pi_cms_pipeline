@@ -66,6 +66,20 @@ a no-op and the static result stands. `--render` is ignored under `--dry-run`.
 The end-of-run summary reports a `playwright_render` count so you can see how
 often it actually fired.
 
+**Targeted re-render (recommended quality pass).** Rendering in Stage 2 is the
+slow part (~32s/firm vs ~8s static). Rather than render every firm on a big run,
+detect statically first, then chase the JS-injected client-portal links only on
+the firms that came back `Unknown`:
+
+```bash
+# Reprocess ONLY the Unknown firms, with rendering on, overwriting their rows.
+# Implies --render always; bound the batch with --limit.
+python pipeline/02_detect_cms.py --rerender-unknowns --limit 100
+```
+
+This upserts (no duplicate rows) and spends render time only where static
+detection found no CMS — so already-detected Hot/Warm firms aren't re-rendered.
+
 ### Optional: export to Google Sheets
 
 Stage 4 always writes `data/final_output.csv` and `data/bonus.csv`. If you'd
