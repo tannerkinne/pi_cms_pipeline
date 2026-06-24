@@ -29,7 +29,7 @@ warnings.filterwarnings("ignore", message=r".*OpenSSL.*", module="urllib3")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import site_fingerprint
-from api_wrappers import claude_classifier, exa_client
+from api_wrappers import claude_classifier, exa_client, cost_tracker
 from utils import DATA_DIR, read_csv_rows, append_csv_row, already_processed_keys, CallCounter
 
 INPUT_PATH = os.path.join(DATA_DIR, "firms_raw.csv")
@@ -72,6 +72,7 @@ def main():
     args = parser.parse_args()
 
     os.makedirs(DATA_DIR, exist_ok=True)
+    cost_tracker.set_context(stage="02")
     firms = read_csv_rows(INPUT_PATH)
     if not firms:
         print(f"No firms found in {INPUT_PATH} — run Stage 1 first.")
@@ -86,6 +87,7 @@ def main():
     for i, firm in enumerate(todo, 1):
         domain = firm["domain"]
         firm_name = firm["firm_name"]
+        cost_tracker.set_context(stage="02", domain=domain)
         print(f"[{i}/{len(todo)}] {firm_name} ({domain})")
 
         if args.dry_run:
@@ -150,6 +152,7 @@ def main():
 
     print(f"\nStage 2 complete. Results in {OUTPUT_PATH}")
     print(f"API usage this run: {counter.summary()}")
+    print(cost_tracker.session_summary("Stage 2"))
     if args.dry_run:
         print("NOTE: this was a --dry-run. No paid API calls were made; results are mock data.")
 

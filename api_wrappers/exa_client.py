@@ -14,6 +14,8 @@ Both stay neural/semantic so we keep credit usage low (no per-platform fan-out).
 """
 import os
 
+from . import cost_tracker
+
 
 def _client():
     from exa_py import Exa
@@ -92,7 +94,9 @@ def search_cms_evidence(firm_name: str, city: str = "", state: str = "", num_res
     for query, n in queries:
         try:
             exa = _client()
-            for item in _run_query(exa, query, n):
+            results = _run_query(exa, query, n)
+            cost_tracker.record("exa", "search", success=True, results_returned=len(results))
+            for item in results:
                 key = item["url"] or item["title"]
                 if key and key in seen:
                     continue
@@ -101,5 +105,7 @@ def search_cms_evidence(firm_name: str, city: str = "", state: str = "", num_res
                 merged.append(item)
         except Exception as e:
             print(f"  [exa] search failed for {firm_name}: {e}")
+            cost_tracker.record("exa", "search", success=False, error_message=str(e),
+                                results_returned=0)
             continue
     return merged

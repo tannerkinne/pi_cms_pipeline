@@ -7,29 +7,65 @@ Edit this file to tune scope without touching pipeline logic.
 TARGET_STATES = ["new jersey", "new york", "pennsylvania", "connecticut"]
 
 # --- Google Places API — firm sourcing configuration ---
-# Bounding boxes (SW lat/lng → NE lat/lng) for each target state.
+# Bounding boxes (SW lat/lng → NE lat/lng) for each target state. Each state maps
+# to a LIST of sub-region boxes rather than one big box: Places (New) returns at
+# most ~60 results (3 pages) per query+box, so one box per state caps recall hard.
+# Splitting each state into metro/region boxes lets the same query surface fresh
+# firms in each area. Boxes may overlap — duplicates are deduped by domain.
 GOOGLE_PLACES_STATE_BBOXES = {
-    "new jersey":   {"sw": (38.9, -75.6), "ne": (41.4, -73.9)},
-    "new york":     {"sw": (40.5, -79.8), "ne": (45.1, -71.9)},
-    "pennsylvania": {"sw": (39.7, -80.5), "ne": (42.3, -74.7)},
-    "connecticut":  {"sw": (40.9, -73.7), "ne": (42.1, -71.8)},
+    "new jersey": [
+        {"sw": (40.5, -74.7), "ne": (41.4, -73.9)},  # North NJ (Newark/Jersey City/Paterson)
+        {"sw": (40.0, -75.2), "ne": (40.6, -74.0)},  # Central NJ (Trenton/New Brunswick)
+        {"sw": (38.9, -75.6), "ne": (40.1, -74.0)},  # South NJ (Camden/Atlantic City)
+    ],
+    "new york": [
+        {"sw": (40.5, -74.3), "ne": (41.1, -71.9)},  # NYC metro + Long Island
+        {"sw": (41.0, -74.3), "ne": (42.5, -73.3)},  # Hudson Valley
+        {"sw": (42.0, -76.5), "ne": (43.6, -73.3)},  # Capital / Central (Albany/Syracuse)
+        {"sw": (42.0, -79.8), "ne": (43.6, -76.3)},  # Western NY (Buffalo/Rochester)
+    ],
+    "pennsylvania": [
+        {"sw": (39.7, -76.0), "ne": (40.6, -74.7)},  # Southeast / Philadelphia
+        {"sw": (40.5, -76.6), "ne": (41.5, -74.7)},  # Northeast (Scranton/Allentown)
+        {"sw": (39.7, -78.6), "ne": (41.5, -76.0)},  # Central (Harrisburg)
+        {"sw": (39.7, -80.5), "ne": (42.3, -78.0)},  # Western (Pittsburgh/Erie)
+    ],
+    "connecticut": [
+        {"sw": (40.9, -73.7), "ne": (41.5, -72.7)},  # Southwest (Stamford/Bridgeport)
+        {"sw": (41.0, -73.0), "ne": (42.1, -72.3)},  # Central / South (New Haven/Hartford)
+        {"sw": (41.3, -72.5), "ne": (42.1, -71.8)},  # East (New London)
+    ],
 }
 
-# Search queries run per state. Multiple queries improve recall across the
-# different ways people describe PI firms and the cases they handle.
+# Search queries run per (state, sub-region box). More queries improve recall
+# across the different ways people describe PI firms and the practice areas they
+# handle — each term surfaces firms the others miss. Cross-query/box duplicates
+# are deduped by domain.
 GOOGLE_PLACES_QUERIES = [
     "personal injury law firm",
     "plaintiff personal injury attorney",
     "car accident attorney",
     "car crash lawyer",
     "auto accident law firm",
+    "truck accident lawyer",
+    "motorcycle accident lawyer",
+    "pedestrian accident attorney",
     "slip and fall attorney",
+    "premises liability lawyer",
+    "construction accident lawyer",
+    "medical malpractice attorney",
+    "wrongful death attorney",
+    "nursing home abuse lawyer",
+    "dog bite attorney",
+    "brain injury attorney",
     "injury lawyer",
 ]
 
-# Max Places API pages to fetch per (state, query) combination.
-# Each page = 1 API call ($17/1000). 4 states × 7 queries × 5 pages = 140 calls max.
-# Cross-query duplicates are deduped by domain before writing to CSV.
+# Max Places API pages to fetch per (sub-region box, query) combination.
+# Each page = 1 API call ($17/1000). Places (New) usually returns ≤3 pages/query,
+# so the practical ceiling is ~(#boxes × #queries × 3) calls — e.g. 14 boxes ×
+# 17 queries × 3 ≈ 714 calls (~$12) for a full sweep. Stage 1 stops early once
+# --limit unique firms are collected, so the real cost is bounded by --limit.
 GOOGLE_PLACES_MAX_PAGES = 5
 
 # --- CMS systems we care about, ranked by value to us ---
@@ -150,3 +186,41 @@ CLAUDE_MODEL = "claude-haiku-4-5-20251001"
 SITE_FETCH_TIMEOUT_SECONDS = 8
 SITE_FETCH_DELAY_SECONDS = 1.0
 USER_AGENT = "Mozilla/5.0 (compatible; ResearchBot/1.0; +internal lead research)"
+
+# --- Apollo rate limiting ---
+# Politeness delay between successive Apollo API calls (people/match email
+# enrichment + people search), mirroring SITE_FETCH_DELAY_SECONDS. Apollo
+# enforces per-minute limits that vary by plan; 1.0s keeps a single-threaded
+# run comfortably under most tiers. Raise if you see HTTP 429s.
+APOLLO_RATE_LIMIT_DELAY_SECONDS = 1.0
+
+# --- API cost rates (USD) -------------------------------------------------
+# Per-unit rates used by api_wrappers/cost_tracker.py to estimate spend on
+# every logged API call. Claude rates are per MILLION tokens (MTok); cache_read
+# is ~0.1x input and cache_write (5-minute TTL) is ~1.25x input, per Anthropic
+# pricing. Exa/Google Places/Apollo are flat per-call/per-credit. Edit these to
+# match your actual contracted rates — they only affect the *estimate*, never
+# the calls themselves.
+COST_RATES = {
+    "claude": {
+        # Haiku 4.5 — the default CLAUDE_MODEL (both the dated ID and the alias).
+        "claude-haiku-4-5-20251001": {
+            "input": 1.00, "output": 5.00, "cache_read": 0.10, "cache_write": 1.25,
+        },
+        "claude-haiku-4-5": {
+            "input": 1.00, "output": 5.00, "cache_read": 0.10, "cache_write": 1.25,
+        },
+        # Sonnet 4.6 — the documented fallback if Haiku looks unreliable.
+        "claude-sonnet-4-6": {
+            "input": 3.00, "output": 15.00, "cache_read": 0.30, "cache_write": 3.75,
+        },
+    },
+    # Exa neural search — flat per search call (each query the Stage 2 wrapper
+    # runs is one search; ~$5 / 1000 searches on typical neural-search pricing).
+    "exa": {"per_search": 0.005},
+    # Google Places API (New) Text Search — $17 / 1000 requests.
+    "google_places": {"per_request": 0.017},
+    # Apollo — billed per credit consumed (a people/match that reveals an email
+    # or a people-search page). Placeholder rate; set to your plan's credit cost.
+    "apollo": {"per_credit": 0.05},
+}

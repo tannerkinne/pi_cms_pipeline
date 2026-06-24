@@ -24,7 +24,11 @@ import subprocess
 import sys
 import os
 
-PIPELINE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pipeline")
+ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
+PIPELINE_DIR = os.path.join(ROOT_DIR, "pipeline")
+sys.path.insert(0, ROOT_DIR)
+
+from api_wrappers import cost_tracker
 
 
 def run_stage(script_name, extra_args):
@@ -61,6 +65,11 @@ def main():
     if args.dry_run:
         common.append("--dry-run")
 
+    # Mark the start so the end-of-run total only sums THIS run's API calls
+    # (api_usage.csv accumulates across runs). Stages run as subprocesses, so we
+    # read their logged rows back from the CSV rather than from memory.
+    run_started = cost_tracker.now_iso()
+
     run_stage("01_source_firms.py", common)
 
     stage2_args = list(common)
@@ -84,6 +93,11 @@ def main():
         run_stage("05_export_to_sheets.py", [])
 
     print(f"\n{'=' * 60}\nPipeline complete. See data/final_output.csv and data/bonus.csv\n{'=' * 60}")
+
+    # Total estimated API spend across every stage of this run.
+    print()
+    print(cost_tracker.summary_since(run_started, "Full pipeline run"))
+    print("Per-stage / per-date breakdown: python scripts/cost_report.py")
 
 
 if __name__ == "__main__":

@@ -145,6 +145,35 @@ first to see your actual per-firm Exa + Claude cost before committing to the ful
 
 Each stage prints an API-usage summary at the end so you can track spend as you go.
 
+### Unified cost tracking
+
+Every API call (Google Places, Exa, Claude, Apollo) is logged to
+`data/api_usage.csv` with its tokens/credits/results and an estimated USD cost
+derived from the `COST_RATES` table in `config.py`. Each stage prints a cost
+summary at the end, and `run_pipeline.py` prints a full-run total. Review spend
+any time without rerunning:
+
+```bash
+python scripts/cost_report.py              # breakdown by stage, service, and date
+python scripts/cost_report.py --since 2026-06-24   # only calls on/after a date
+```
+
+Tracking is best-effort and never blocks the pipeline — any tracker failure is
+logged to `data/tracker_errors.log` instead of raising. Edit `COST_RATES` to
+match your contracted rates (Claude rates are per million tokens; Exa/Places are
+per call; Apollo is per credit).
+
+### Apollo email enrichment (Stage 3)
+
+When `APOLLO_API_KEY` is set, Stage 3 takes each decision-maker name it finds and
+calls Apollo People Match (`/api/v1/people/match`) for a **verified** email,
+writing it to a `decision_maker_email` column in `contacts.csv` and
+`final_output.csv`. Only Apollo-verified addresses are kept — misses are left
+blank and logged, never guessed. Resume is by non-empty email (already-enriched
+firms are skipped), and calls are spaced by `APOLLO_RATE_LIMIT_DELAY_SECONDS`
+(default 1.0s). If `APOLLO_API_KEY` is unset, Stage 3 still runs and just leaves
+the email column blank.
+
 ## Known caveats to sanity-check before trusting the output
 
 - **`est_attorneys` is blank for all rows.** Google Places doesn't expose headcount.
@@ -178,7 +207,9 @@ If Stage 1 returns fewer firms than expected, options in rough order of effort:
   (currently empty since Google Places doesn't provide headcount data)
 - `data/firms_raw.csv`, `data/cms_results.csv`, `data/contacts.csv` —
   intermediate per-stage data, kept so you can audit any single firm's evidence
-  trail without rerunning anything
+  trail without rerunning anything (`contacts.csv` now carries `decision_maker_email`)
+- `data/api_usage.csv` — one row per API call with tokens/credits/results and
+  estimated cost; read it with `scripts/cost_report.py`
 
 Import `final_output.csv` into Airtable/Sheets — this pipeline produces the CSV;
 it doesn't push to Airtable directly. (Easy to add later via Airtable's API.)

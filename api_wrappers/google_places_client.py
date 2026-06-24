@@ -17,6 +17,8 @@ import os
 import time
 import requests
 
+from . import cost_tracker
+
 PLACES_BASE = "https://places.googleapis.com/v1/places:searchText"
 FIELD_MASK = "places.displayName,places.formattedAddress,places.websiteUri,places.id,nextPageToken"
 
@@ -93,14 +95,27 @@ def search_pi_firms(state_name: str, bbox: dict, text_query: str,
         if resp.status_code != 200:
             print(f"  [places] search failed for '{state_name}' / '{text_query}': "
                   f"HTTP {resp.status_code} {resp.text[:200]}")
+            cost_tracker.record(
+                "google_places", "places:searchText", success=False,
+                error_message=f"HTTP {resp.status_code}", results_returned=0,
+            )
             return {"places": [], "next_page_token": None}
         data = resp.json()
+        places = data.get("places", [])
+        cost_tracker.record(
+            "google_places", "places:searchText", success=True,
+            results_returned=len(places),
+        )
         return {
-            "places": data.get("places", []),
+            "places": places,
             "next_page_token": data.get("nextPageToken"),
         }
     except requests.RequestException as e:
         print(f"  [places] request error for '{state_name}' / '{text_query}': {e}")
+        cost_tracker.record(
+            "google_places", "places:searchText", success=False,
+            error_message=str(e), results_returned=0,
+        )
         return {"places": [], "next_page_token": None}
 
 

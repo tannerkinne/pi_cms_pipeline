@@ -13,6 +13,7 @@ import json
 import re
 
 from config import CLAUDE_MODEL
+from . import cost_tracker
 
 VALID_CMS = ["CloudLex", "Filevine", "Litify", "SmartAdvocate", "CASEpeer", "Unknown"]
 VALID_CONFIDENCE = ["High", "Medium", "Low"]
@@ -74,6 +75,23 @@ Respond ONLY with a single JSON object, no markdown fences, no preamble, matchin
 }"""
 
 
+def _track_usage(response, endpoint: str = "messages.create"):
+    """Log this Claude call's token usage to the cost tracker. Never raises."""
+    try:
+        u = getattr(response, "usage", None)
+        if u is None:
+            return
+        cost_tracker.record(
+            "claude", endpoint, success=True, model=CLAUDE_MODEL,
+            tokens_input=getattr(u, "input_tokens", 0) or 0,
+            tokens_output=getattr(u, "output_tokens", 0) or 0,
+            tokens_cache_read=getattr(u, "cache_read_input_tokens", 0) or 0,
+            tokens_cache_write=getattr(u, "cache_creation_input_tokens", 0) or 0,
+        )
+    except Exception:
+        pass  # tracking must never break classification
+
+
 def _call_claude(evidence_text: str, max_retries: int = 2) -> dict:
     import anthropic
 
@@ -93,6 +111,7 @@ def _call_claude(evidence_text: str, max_retries: int = 2) -> dict:
                 system=SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": evidence_text}],
             )
+            _track_usage(response)
             raw_text = "".join(
                 block.text for block in response.content if block.type == "text"
             ).strip()

@@ -25,7 +25,7 @@ BONUS_PATH = os.path.join(DATA_DIR, "bonus.csv")
 FIELDNAMES = [
     "firm_name", "website", "city", "state", "plaintiff_pi_focus", "trial_focused",
     "est_attorneys", "cms_detected", "cms_confidence", "cms_evidence", "decision_maker",
-    "hiring_signal", "hiring_signal_evidence", "data_source", "fit_score",
+    "decision_maker_email", "hiring_signal", "hiring_signal_evidence", "data_source", "fit_score",
 ]
 
 FIT_SORT_ORDER = {"Hot": 0, "Warm": 1, "Cold/Unknown": 2}
@@ -59,6 +59,7 @@ def main():
         decision_maker = ""
         if contact.get("decision_maker_name"):
             decision_maker = f"{contact['decision_maker_name']} ({contact.get('decision_maker_title', '')})"
+        decision_maker_email = contact.get("decision_maker_email", "")
 
         row = {
             "firm_name": firm.get("firm_name", ""),
@@ -72,6 +73,7 @@ def main():
             "cms_confidence": cms.get("cms_confidence", ""),
             "cms_evidence": cms.get("cms_evidence", ""),
             "decision_maker": decision_maker,
+            "decision_maker_email": decision_maker_email,
             "hiring_signal": cms.get("hiring_signal", ""),
             "hiring_signal_evidence": cms.get("hiring_signal_evidence", ""),
             "data_source": firm.get("source", ""),
