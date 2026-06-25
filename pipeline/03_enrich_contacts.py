@@ -25,7 +25,8 @@ import site_fingerprint
 from api_wrappers import apollo_client, cost_tracker
 from config import (CONTACT_PATHS_TO_CHECK, CLAUDE_MODEL, SITE_FETCH_TIMEOUT_SECONDS,
                     USER_AGENT, APOLLO_RATE_LIMIT_DELAY_SECONDS, SITE_FETCH_DELAY_SECONDS,
-                    EMAIL_SCRAPE_DENYLIST_DOMAINS, EMAIL_SCRAPE_FIRMWIDE_PATHS)
+                    EMAIL_SCRAPE_DENYLIST_DOMAINS, EMAIL_SCRAPE_FIRMWIDE_PATHS,
+                    EMAIL_GENERIC_LOCALPARTS)
 from utils import (DATA_DIR, read_csv_rows, append_csv_row, already_processed_keys,
                    write_csv_rows, CallCounter)
 
@@ -350,33 +351,60 @@ def _find_bio_link(html: str, name: str, domain: str):
     return None
 
 
-def _scrape_named_email(domain: str, name: str, primary_html: str) -> str:
-    """Find the decision-maker's published email on the firm site, or ''.
+def _pick_generic_email(on_domain_emails: set) -> str:
+    """From a set of firm-domain emails, return the best generic firm inbox
+    (info@/contact@/...) by EMAIL_GENERIC_LOCALPARTS priority, or '' if none.
+    Anything that isn't a recognized firm inbox (e.g. a different attorney's
+    personal address) is intentionally NOT returned."""
+    by_local = {}
+    for e in on_domain_emails:
+        loc = re.sub(r"[^a-z0-9]", "", e.split("@", 1)[0].lower())
+        by_local.setdefault(loc, e)
+    for loc in EMAIL_GENERIC_LOCALPARTS:
+        if loc in by_local:
+            return by_local[loc]
+    return ""
 
-    Order, stopping at the first name-matched on-domain address:
-      1. the already-fetched team/about page,
-      2. the decision-maker's own bio page (one same-domain hop) — where attorney
-         emails most often live,
-      3. firm-wide pages (homepage, /contact, /contact-us).
+
+def _scrape_firm_email(domain: str, name: str, primary_html: str) -> tuple:
+    """Find a contact email on the firm's own site. Returns (email, tier):
+      tier 'named'   — local-part matches the decision-maker's name (preferred),
+      tier 'generic' — a generic firm inbox (info@/contact@...) on the firm domain,
+      tier ''        — nothing usable found.
+    Never returns an off-domain address or another person's personal address.
+
+    Pages are visited in order (team page → decision-maker bio → firm-wide), and a
+    name match short-circuits immediately. On-domain candidates are accumulated
+    along the way so a generic firm inbox can be chosen as the fallback.
     """
-    if not _has_surname(name) and not _split_name(name)[0]:
-        return ""
-    hit = _match_named_email(_extract_emails_from_html(primary_html), name, domain)
-    if hit:
-        return hit
+    has_name = bool(_split_name(name)[0] or _split_name(name)[1])
+    on_domain = set()
 
-    bio_url = _find_bio_link(primary_html, name, domain)
-    if bio_url:
-        hit = _match_named_email(_extract_emails_from_html(_fetch_url(bio_url)), name, domain)
-        if hit:
-            return hit
+    def _scan(html):
+        ems = _extract_emails_from_html(html)
+        for e in ems:
+            if _email_on_firm_domain(e.split("@", 1)[1], domain):
+                on_domain.add(e)
+        return _match_named_email(ems, name, domain) if has_name else ""
+
+    hit = _scan(primary_html)
+    if hit:
+        return hit, "named"
+
+    if has_name:
+        bio_url = _find_bio_link(primary_html, name, domain)
+        if bio_url:
+            hit = _scan(_fetch_url(bio_url))
+            if hit:
+                return hit, "named"
 
     for path in EMAIL_SCRAPE_FIRMWIDE_PATHS:
-        hit = _match_named_email(
-            _extract_emails_from_html(_fetch_url(f"https://{domain}{path}")), name, domain)
+        hit = _scan(_fetch_url(f"https://{domain}{path}"))
         if hit:
-            return hit
-    return ""
+            return hit, "named"
+
+    generic = _pick_generic_email(on_domain)
+    return (generic, "generic") if generic else ("", "")
 
 
 def _find_bio_link_by_first(html: str, first: str, domain: str):
@@ -482,6 +510,10 @@ def main():
                              "'fallback' (default) renders only when the static fetch is empty/"
                              "low-signal; 'always' renders every firm; 'off' disables it. Safe "
                              "with no Playwright installed (degrades to static).")
+    parser.add_argument("--skip-apollo", action="store_true",
+                        help="Skip all Apollo calls (people-search + email match) and rely only on "
+                             "website scraping. Use to re-apply the free website email step to "
+                             "firms Apollo already missed without re-billing Apollo.")
     args = parser.parse_args()
 
     os.makedirs(DATA_DIR, exist_ok=True)
@@ -494,10 +526,13 @@ def main():
 
     # Apollo email enrichment is opt-in on the key being present. If it's not
     # set, warn once and skip enrichment entirely rather than crashing.
-    apollo_enabled = bool(os.environ.get("APOLLO_API_KEY")) and not args.dry_run
+    apollo_enabled = bool(os.environ.get("APOLLO_API_KEY")) and not args.dry_run and not args.skip_apollo
     if not args.dry_run and not apollo_enabled:
-        print("  [warn] APOLLO_API_KEY not set — skipping Apollo email enrichment "
-              "(decision_maker_email will be left blank).")
+        if args.skip_apollo:
+            print("  [info] --skip-apollo: using website scraping only, no Apollo calls.")
+        else:
+            print("  [warn] APOLLO_API_KEY not set — skipping Apollo email enrichment "
+                  "(decision_maker_email will be left blank).")
 
     # Snapshot existing contacts (by domain) so --force can reuse an unchanged
     # name's already-verified email instead of re-billing Apollo for it.
@@ -575,7 +610,7 @@ def main():
             # last name for the downstream email lookup). This also avoids an
             # Apollo call/credit whenever the scrape already gave a full name.
             contact = scrape_contact
-            if not _has_surname(contact.get("decision_maker_name", "")):
+            if apollo_enabled and not _has_surname(contact.get("decision_maker_name", "")):
                 apollo_result = None
                 try:
                     apollo_result = apollo_client.find_decision_maker(domain)
@@ -612,14 +647,15 @@ def main():
                     counter.tick("apollo_email_match (miss)", 1)
                     print(f"    [miss] no verified Apollo email for {new_name}")
 
-                # Fallback: scrape the firm's own site for the decision-maker's
-                # published email (name-matched, on firm domain only). Free, and
-                # the most authoritative source when Apollo has nothing.
-                if not email and new_name:
-                    email = _scrape_named_email(domain, new_name, page_html)
+                # Fallback: scrape the firm's own site — prefer the decision-
+                # maker's name-matched address, else a generic firm inbox
+                # (info@/contact@...) on the firm domain. Free, never off-domain.
+                if not email:
+                    email, tier = _scrape_firm_email(domain, new_name, page_html)
                     if email:
-                        counter.tick("website_email (hit)", 1)
-                        print(f"    [web] scraped {new_name} -> {email}")
+                        counter.tick(f"website_email ({tier})", 1)
+                        who = new_name or "(firm)"
+                        print(f"    [web] scraped {who} -> {email} [{tier}]")
 
             row = {"domain": domain, "decision_maker_email": email, **contact}
 

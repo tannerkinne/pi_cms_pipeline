@@ -165,6 +165,18 @@ EMAIL_SCRAPE_FIRMWIDE_PATHS = ["", "/contact", "/contact-us"]
 # email (Stage 3). The firm-domain + name-match gate already excludes almost all
 # noise, but this is a cheap early filter for embeds, trackers, asset hosts, and
 # site-builder boilerplate that occasionally appear in mailto:/page text.
+# When no NAME-matched email is found on the firm's own domain, Stage 3 may fall
+# back to a generic firm inbox on that domain (still never off-domain or another
+# person's address). Only email local-parts in this set qualify — genuine firm
+# contact inboxes, not a different attorney's personal address. Ordered by
+# preference (the first match wins). Matched against the local-part lowercased
+# with punctuation stripped (so "contact-us" -> "contactus").
+EMAIL_GENERIC_LOCALPARTS = (
+    "info", "contact", "contactus", "intake", "newcase", "newcases", "newclients",
+    "clientservices", "office", "reception", "frontdesk", "admin", "inquiries",
+    "inquiry", "hello", "mail", "email", "firm", "legal", "help", "support",
+)
+
 EMAIL_SCRAPE_DENYLIST_DOMAINS = {
     "example.com", "example.org", "email.com", "domain.com", "yourdomain.com",
     "sentry.io", "sentry-cdn.com", "wix.com", "wixpress.com", "squarespace.com",
