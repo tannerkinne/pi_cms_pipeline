@@ -76,6 +76,10 @@ def main():
                              "rows. Spends render time only where static detection found no CMS — "
                              "the cheap way to chase JS-injected portal links. Implies --render "
                              "always unless --render is given explicitly.")
+    parser.add_argument("--only", default="",
+                        help="Comma-separated domains to (re)detect — overwrites just those rows "
+                             "and ignores --limit. Useful to re-run a specific batch (e.g. firms "
+                             "detected while an API was down).")
     args = parser.parse_args()
 
     os.makedirs(DATA_DIR, exist_ok=True)
@@ -87,8 +91,19 @@ def main():
 
     counter = CallCounter()
     render_mode = args.render
+    only = {d.strip() for d in args.only.split(",") if d.strip()}
 
-    if args.rerender_unknowns:
+    if only:
+        # Targeted re-detect of specific domains, overwriting their rows (upsert,
+        # same drop-then-reappend pattern as --rerender-unknowns / Stage 3 --force).
+        existing = read_csv_rows(OUTPUT_PATH)
+        todo = [f for f in firms if f["domain"] in only]
+        todo_domains = {f["domain"] for f in todo}
+        retained = [r for r in existing if r["domain"] not in todo_domains]
+        write_csv_rows(OUTPUT_PATH, retained, FIELDNAMES, mode="w")
+        print(f"Stage 2 [only]: re-detecting {len(todo)} firms with render='{render_mode}' "
+              f"(overwriting their rows).")
+    elif args.rerender_unknowns:
         # Targeted quality pass: reprocess only the firms currently classified
         # 'Unknown' (static detection found no CMS), with rendering on. Drop their
         # rows up front so the fresh rows replace them (no duplicates), mirroring
