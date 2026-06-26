@@ -33,8 +33,24 @@ from api_wrappers import claude_classifier, exa_client, cost_tracker
 from utils import (DATA_DIR, read_csv_rows, append_csv_row, write_csv_rows,
                    already_processed_keys, CallCounter)
 
-INPUT_PATH = os.path.join(DATA_DIR, "firms_raw.csv")
+RAW_INPUT_PATH = os.path.join(DATA_DIR, "firms_raw.csv")
+VETTED_INPUT_PATH = os.path.join(DATA_DIR, "firms_vetted.csv")
 OUTPUT_PATH = os.path.join(DATA_DIR, "cms_results.csv")
+
+
+def _load_input_firms():
+    """Prefer the headcount-vetted firm list when it exists: process ONLY firms
+    that passed the Stage 1b 5-100 attorney gate, so we never spend Exa + full
+    classification on firms that are too small/large to use. Falls back to the
+    raw sourced list when no vet has been run yet (backward compatible)."""
+    vetted = read_csv_rows(VETTED_INPUT_PATH)
+    if vetted:
+        passing = [r for r in vetted if (r.get("vet_status") or "").strip() == "pass"]
+        skipped = len(vetted) - len(passing)
+        print(f"Stage 2: using {len(passing)} headcount-vetted firms (5-100 attorneys); "
+              f"{skipped} vetted firms outside range are excluded.")
+        return passing
+    return read_csv_rows(RAW_INPUT_PATH)
 
 FIELDNAMES = [
     "domain", "firm_name", "cms_detected", "cms_confidence", "cms_evidence",
@@ -84,9 +100,9 @@ def main():
 
     os.makedirs(DATA_DIR, exist_ok=True)
     cost_tracker.set_context(stage="02")
-    firms = read_csv_rows(INPUT_PATH)
+    firms = _load_input_firms()
     if not firms:
-        print(f"No firms found in {INPUT_PATH} — run Stage 1 first.")
+        print(f"No input firms found — run Stage 1 (and Stage 1b vet) first.")
         return
 
     counter = CallCounter()

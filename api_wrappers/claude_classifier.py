@@ -265,3 +265,85 @@ def classify_firm(firm_name: str, fingerprint_result: dict, careers_job_titles: 
     evidence_text = "\n".join(lines)
     result = _call_claude(evidence_text)
     return _suppress_secondary_only(result, fingerprint_result, careers_job_titles, exa_evidence)
+
+
+# ---------------------------------------------------------------------------
+# Lightweight attorney-headcount estimate for the Stage 1b vet gate.
+#
+# This runs BEFORE the paid Exa search + full classification, so we only spend
+# on firms inside the target size band (config.ATTORNEY_MIN/MAX_COUNT). It uses
+# the same cheap CLAUDE_MODEL but a tiny, single-purpose prompt and a small
+# response, so it costs a fraction of a full classification.
+# ---------------------------------------------------------------------------
+HEADCOUNT_SYSTEM_PROMPT = """You estimate how many attorneys (lawyers) work at a US law firm, using \
+ONLY the website evidence provided. Count distinct attorneys/lawyers — never paralegals, intake staff, \
+or office locations.
+
+Guidance:
+- The most reliable signal is the list of attorney names parsed from the firm's team/attorneys page. \
+If you are given N distinct attorney names, the estimate is normally N.
+- An explicit phrase in the page text ("our team of 12 attorneys", "30+ lawyers") is strong — use the stated number.
+- If the only evidence is a small About page naming 1-2 attorneys, return that small number.
+- If there is genuinely no evidence of attorney count, return 0 (unknown). Do NOT guess a mid-range number.
+
+Respond ONLY with a single JSON object, no markdown fences, no preamble, exactly:
+{"est_attorneys": <integer, 0 if unknown>, "basis": "<short phrase citing the evidence used>"}"""
+
+
+def _headcount_evidence_text(firm_name: str, fingerprint_result: dict) -> str:
+    lines = [f"FIRM: {firm_name}", ""]
+
+    lines.append("ATTORNEY NAMES PARSED FROM TEAM/ATTORNEYS PAGES (count distinct names):")
+    attorney_names = fingerprint_result.get("attorney_names", [])
+    if attorney_names:
+        for name in attorney_names[:60]:
+            lines.append(f"  - {name}")
+    else:
+        lines.append("  - (no names cleanly extracted; use the listing text below)")
+    lines.append("")
+
+    lines.append("ATTORNEY LISTING PAGE TEXT:")
+    attorney_text = fingerprint_result.get("attorney_page_text", "")
+    lines.append(f"  {attorney_text}" if attorney_text else "  (no attorney listing pages reachable)")
+    lines.append("")
+
+    lines.append("HOMEPAGE TEXT SNIPPET (may mention firm size):")
+    snippet = fingerprint_result.get("homepage_text_snippet", "")
+    lines.append(f"  {snippet}" if snippet else "  (homepage unreachable or empty)")
+
+    return "\n".join(lines)
+
+
+def estimate_headcount(firm_name: str, fingerprint_result: dict, max_retries: int = 2) -> dict:
+    """Cheap, single-purpose attorney-headcount estimate. Never raises; on any
+    failure returns {"est_attorneys": 0, "basis": "estimate failed"} so the vet
+    gate can treat it as out of range rather than crash the batch."""
+    import anthropic
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise RuntimeError("ANTHROPIC_API_KEY environment variable is not set.")
+
+    evidence_text = _headcount_evidence_text(firm_name, fingerprint_result)
+    client = anthropic.Anthropic(api_key=api_key)
+
+    for _ in range(max_retries + 1):
+        try:
+            response = client.messages.create(
+                model=CLAUDE_MODEL,
+                max_tokens=128,
+                temperature=0,
+                system=HEADCOUNT_SYSTEM_PROMPT,
+                messages=[{"role": "user", "content": evidence_text}],
+            )
+            _track_usage(response, endpoint="headcount.estimate")
+            raw = "".join(b.text for b in response.content if b.type == "text").strip()
+            raw = re.sub(r"^```(json)?|```$", "", raw, flags=re.MULTILINE).strip()
+            parsed = json.loads(raw)
+            return {
+                "est_attorneys": int(parsed.get("est_attorneys", 0)),
+                "basis": str(parsed.get("basis", ""))[:200],
+            }
+        except (json.JSONDecodeError, KeyError, ValueError, TypeError):
+            continue
+    return {"est_attorneys": 0, "basis": "estimate failed after retries; treated as unknown"}

@@ -20,12 +20,16 @@ USAGE
 See README.md for required environment variables and per-stage cost notes.
 """
 import argparse
+import csv
 import subprocess
 import sys
 import os
 
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 PIPELINE_DIR = os.path.join(ROOT_DIR, "pipeline")
+DATA_DIR = os.path.join(ROOT_DIR, "data")
+FIRMS_RAW_PATH = os.path.join(DATA_DIR, "firms_raw.csv")
+FIRMS_VETTED_PATH = os.path.join(DATA_DIR, "firms_vetted.csv")
 sys.path.insert(0, ROOT_DIR)
 
 from api_wrappers import cost_tracker
@@ -41,14 +45,44 @@ def run_stage(script_name, extra_args):
         sys.exit(result.returncode)
 
 
+def _row_count(path):
+    """Number of data rows (excludes header) in a CSV, or 0 if it doesn't exist."""
+    if not os.path.exists(path):
+        return 0
+    with open(path, newline="", encoding="utf-8") as f:
+        return max(0, sum(1 for _ in csv.reader(f)) - 1)
+
+
+def _passing_count(path):
+    """How many firms in firms_vetted.csv passed the 5-100 attorney gate."""
+    if not os.path.exists(path):
+        return 0
+    with open(path, newline="", encoding="utf-8") as f:
+        return sum(1 for r in csv.DictReader(f) if (r.get("vet_status") or "").strip() == "pass")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Run the full plaintiff-PI CMS-detection pipeline.")
     parser.add_argument("--limit", type=int, default=10,
-                        help="Max firms to process end to end (default 10; raise to ~200 for a full run).")
+                        help="TARGET number of in-range (5-100 attorney) firms to end up with. "
+                             "With the vet gate on (default), the pipeline keeps sourcing + vetting "
+                             "until this many firms PASS the gate, then enriches them — so --limit is "
+                             "a goal, not a raw-firm cap. With --no-vet it reverts to the old meaning "
+                             "(max firms pushed through end to end). Default 10; raise to refill the list.")
+    parser.add_argument("--source-batch", type=int, default=100,
+                        help="How many new firms to source per round while chasing --limit passing "
+                             "firms (default 100). Larger = fewer Google Places re-scans, coarser overshoot.")
+    parser.add_argument("--max-source-rounds", type=int, default=40,
+                        help="Safety cap on sourcing rounds so an exhausted search can't loop forever "
+                             "(default 40). The loop also stops on its own when sourcing finds no new firms.")
     parser.add_argument("--dry-run", action="store_true",
                         help="No real API calls anywhere; validates wiring with mock data.")
     parser.add_argument("--skip-exa", action="store_true",
                         help="Skip Exa search in Stage 2 to cut cost.")
+    parser.add_argument("--no-vet", action="store_true",
+                        help="Skip the Stage 1b attorney-headcount vet gate (5-100). Reverts --limit "
+                             "to a raw-firm cap and processes every sourced firm. By default the gate "
+                             "is on and the pipeline sources until --limit firms pass it.")
     parser.add_argument("--skip-contacts", action="store_true",
                         help="Skip Stage 3 entirely (decision-maker lookup).")
     parser.add_argument("--render", choices=["off", "fallback", "always"], default="off",
@@ -73,18 +107,60 @@ def main():
                              "requirements-sheets.txt). Skipped under --dry-run.")
     args = parser.parse_args()
 
-    common = ["--limit", str(args.limit)]
-    if args.dry_run:
-        common.append("--dry-run")
+    dry = ["--dry-run"] if args.dry_run else []
+    render_pass = (["--render", args.render] if args.render != "off" else [])
 
     # Mark the start so the end-of-run total only sums THIS run's API calls
     # (api_usage.csv accumulates across runs). Stages run as subprocesses, so we
     # read their logged rows back from the CSV rather than from memory.
     run_started = cost_tracker.now_iso()
 
-    run_stage("01_source_firms.py", common)
+    # process_limit = how many firms Stage 2/3 should be allowed to enrich.
+    process_limit = args.limit
 
-    stage2_args = list(common)
+    if args.no_vet:
+        # Legacy behavior: --limit is a raw-firm cap; no headcount gate.
+        run_stage("01_source_firms.py", ["--limit", str(args.limit)] + dry)
+    elif args.dry_run:
+        # Wiring check only — one source + vet pass at --limit, no source-until loop
+        # (so a dry run stays fast and doesn't churn the whole sourced backlog).
+        run_stage("01_source_firms.py", ["--limit", str(args.limit)] + dry)
+        run_stage("01b_vet_headcount.py", ["--limit", str(args.limit)] + dry + render_pass)
+    else:
+        # Source + vet in a loop until --limit firms PASS the 5-100 gate. Each round
+        # first vets any already-sourced-but-unvetted firms (cheap, reuses firms on
+        # hand), then sources a fresh batch only if still short. Stops when the
+        # target is met, sourcing finds nothing new, or --max-source-rounds is hit.
+        target = args.limit
+        print(f"\n{'=' * 60}\nSourcing + vetting until {target} firms pass the 5-100 attorney gate"
+              f"\n{'=' * 60}", flush=True)
+        rounds = 0
+        while True:
+            unvetted = _row_count(FIRMS_RAW_PATH) - _row_count(FIRMS_VETTED_PATH)
+            if unvetted > 0:
+                run_stage("01b_vet_headcount.py", ["--limit", str(unvetted)] + render_pass)
+            passing = _passing_count(FIRMS_VETTED_PATH)
+            print(f"\n  -> {passing}/{target} firms in the 5-100 range so far "
+                  f"(round {rounds}).", flush=True)
+            if passing >= target:
+                break
+            rounds += 1
+            if rounds > args.max_source_rounds:
+                print(f"\n[!] Hit --max-source-rounds ({args.max_source_rounds}); "
+                      f"stopping at {passing}/{target} in range.", flush=True)
+                break
+            before = _row_count(FIRMS_RAW_PATH)
+            run_stage("01_source_firms.py", ["--limit", str(args.source_batch)])
+            if _row_count(FIRMS_RAW_PATH) == before:
+                print(f"\n[!] Sourcing exhausted — no new firms found. Stopping at "
+                      f"{passing}/{target} in range.\n    Widen sourcing coverage (see README "
+                      f"'Tuning firm sourcing coverage') to reach a higher target.", flush=True)
+                break
+        # Enrich every passing firm not already done (resumable); the pass count is
+        # a safe upper bound on how many Stage 2/3 still need to process.
+        process_limit = _passing_count(FIRMS_VETTED_PATH)
+
+    stage2_args = ["--limit", str(process_limit)] + dry
     if args.skip_exa:
         stage2_args.append("--skip-exa")
     # Render is a Stage-2-only concern and is ignored under --dry-run (Stage 2
@@ -96,7 +172,7 @@ def main():
     if not args.skip_contacts:
         # Stage 3 renders JS-rendered team/contact pages by default (fallback);
         # --no-render forces static-only. Skipped under --dry-run (no real fetches).
-        stage3_args = list(common)
+        stage3_args = ["--limit", str(process_limit)] + dry
         if args.no_render and not args.dry_run:
             stage3_args += ["--render", "off"]
         run_stage("03_enrich_contacts.py", stage3_args)

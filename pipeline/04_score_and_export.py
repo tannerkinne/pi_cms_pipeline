@@ -13,7 +13,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from config import fit_score
+from config import fit_score, attorney_count_in_range, ATTORNEY_MIN_COUNT, ATTORNEY_MAX_COUNT
 from utils import DATA_DIR, read_csv_rows, write_csv_rows
 
 FIRMS_PATH = os.path.join(DATA_DIR, "firms_raw.csv")
@@ -21,6 +21,7 @@ CMS_PATH = os.path.join(DATA_DIR, "cms_results.csv")
 CONTACTS_PATH = os.path.join(DATA_DIR, "contacts.csv")
 FINAL_PATH = os.path.join(DATA_DIR, "final_output.csv")
 BONUS_PATH = os.path.join(DATA_DIR, "bonus.csv")
+OUT_OF_RANGE_PATH = os.path.join(DATA_DIR, "out_of_range.csv")
 
 FIELDNAMES = [
     "firm_name", "website", "city", "state", "plaintiff_pi_focus", "trial_focused",
@@ -45,7 +46,8 @@ def main():
         print(f"No data in {FIRMS_PATH} — run earlier stages first.")
         return
 
-    main_rows, bonus_rows = [], []
+    main_rows, bonus_rows, out_of_range_rows = [], [], []
+    oor_low = oor_high = 0
 
     for domain, firm in firms.items():
         if domain not in cms_results:
@@ -80,8 +82,24 @@ def main():
             "fit_score": score,
         }
 
-        # est_attorneys is not available from Google Places sourcing, so is_outlier is
-        # always False and bonus.csv will be empty unless a future sourcing stage adds counts.
+        # Authoritative size gate: final_output only ever contains firms whose
+        # est_attorneys (from Stage 2 classification) is within the 5-100 band.
+        # Out-of-range firms are NOT dropped silently — they're written to
+        # out_of_range.csv so you can see exactly how many replacements to source.
+        if not attorney_count_in_range(cms.get("est_attorneys", "")):
+            try:
+                n = int(float(cms.get("est_attorneys", "")))
+            except (TypeError, ValueError):
+                n = 0
+            if n > ATTORNEY_MAX_COUNT:
+                oor_high += 1
+            else:
+                oor_low += 1
+            out_of_range_rows.append(row)
+            continue
+
+        # is_outlier (bonus tab) is reserved for future size-banded sourcing;
+        # with the hard gate above, every main row is already in the 5-100 box.
         is_outlier = False
 
         if is_outlier and score in ("Hot", "Warm"):
@@ -94,14 +112,19 @@ def main():
 
     write_csv_rows(FINAL_PATH, main_rows, FIELDNAMES, mode="w")
     write_csv_rows(BONUS_PATH, bonus_rows, FIELDNAMES, mode="w")
+    write_csv_rows(OUT_OF_RANGE_PATH, out_of_range_rows, FIELDNAMES, mode="w")
 
     hot = sum(1 for r in main_rows if r["fit_score"] == "Hot")
     warm = sum(1 for r in main_rows if r["fit_score"] == "Warm")
     cold = sum(1 for r in main_rows if r["fit_score"] == "Cold/Unknown")
 
     print(f"Stage 4 complete.")
-    print(f"  Main list: {len(main_rows)} firms -> {FINAL_PATH}")
+    print(f"  Main list (in range, {ATTORNEY_MIN_COUNT}-{ATTORNEY_MAX_COUNT} attorneys): "
+          f"{len(main_rows)} firms -> {FINAL_PATH}")
     print(f"    Hot: {hot} | Warm: {warm} | Cold/Unknown: {cold}")
+    print(f"  Out of range (excluded from final, need replacing): "
+          f"{len(out_of_range_rows)} firms -> {OUT_OF_RANGE_PATH}")
+    print(f"    <{ATTORNEY_MIN_COUNT} attorneys: {oor_low} | >{ATTORNEY_MAX_COUNT} attorneys: {oor_high}")
     print(f"  Bonus list (outliers, Hot/Warm only): {len(bonus_rows)} firms -> {BONUS_PATH}")
 
 

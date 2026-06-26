@@ -289,6 +289,26 @@ def fit_score(cms_detected: str) -> str:
     return "Cold/Unknown"
 
 
+# --- Attorney-headcount vetting window ------------------------------------
+# A firm must have an estimated attorney count within this inclusive range to
+# (a) pass the Stage 1b headcount vet gate and proceed through the paid
+# enrichment stages, and (b) appear in final_output.csv. Stage 4 enforces it
+# authoritatively, so the deliverable only ever contains in-range firms.
+ATTORNEY_MIN_COUNT = 5
+ATTORNEY_MAX_COUNT = 100
+
+
+def attorney_count_in_range(est_attorneys) -> bool:
+    """True iff est_attorneys parses to an int within [MIN, MAX] inclusive.
+    Blank / unparseable / 0 counts as OUT of range — we never confirmed the
+    firm has at least ATTORNEY_MIN_COUNT attorneys, so it's excluded."""
+    try:
+        n = int(float(est_attorneys))
+    except (TypeError, ValueError):
+        return False
+    return ATTORNEY_MIN_COUNT <= n <= ATTORNEY_MAX_COUNT
+
+
 # --- Claude classification model ---
 # Cheapest current model — good enough for the structured classification task.
 # Bump to claude-sonnet-4-6 for a small batch if Haiku's calls look unreliable.

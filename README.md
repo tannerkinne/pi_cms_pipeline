@@ -121,6 +121,8 @@ python run_pipeline.py --dry-run --limit 5
 python run_pipeline.py --limit 5
 
 # 3. Look at data/final_output.csv. If it looks right, scale up:
+#    --limit is a TARGET of in-range (5-100 attorney) firms — the pipeline keeps
+#    sourcing + vetting until 200 firms pass the gate, then enriches them.
 python run_pipeline.py --limit 200
 ```
 
@@ -134,10 +136,65 @@ letting the next stage spend money:
 
 ```bash
 python pipeline/01_source_firms.py --limit 20
+python pipeline/01b_vet_headcount.py --limit 20   # 5-100 attorney gate
 python pipeline/02_detect_cms.py --limit 20
 python pipeline/03_enrich_contacts.py --limit 20
 python pipeline/04_score_and_export.py
 ```
+
+### Stage 1b: attorney-headcount vet gate (5–100)
+
+We only want firms with **5–100 attorneys**. Estimating headcount used to happen
+deep in Stage 2 (after the paid Exa + Claude classification) and again in
+contact enrichment, so we were paying to enrich firms we'd later discard — and
+roughly **70% of sourced firms fall outside the band** (overwhelmingly solo/2–4
+attorney shops).
+
+Stage 1b moves that check to the front, before any paid call:
+
+1. Fingerprint the firm's site (free HTTP + regex; renders JS team pages in
+   `fallback` mode so a client-rendered roster isn't mistaken for a tiny firm).
+2. One cheap, bounded Claude headcount estimate (tiny prompt, `claude-haiku-4-5`
+   — a fraction of a full classification).
+
+Firms are written to `data/firms_vetted.csv` with `vet_status` of `pass`,
+`fail_low` (<5), or `fail_high` (>100). **Stage 2 then processes only the
+`pass` firms**, so Exa + classification + contact lookup never run on
+out-of-range firms. The gate runs automatically in `run_pipeline.py`; disable
+with `--no-vet`.
+
+As a backstop, **Stage 4 enforces the same 5–100 band authoritatively** on the
+final `est_attorneys` from classification: in-range firms go to
+`final_output.csv`, out-of-range firms are written to `data/out_of_range.csv`
+(not dropped silently) and the run prints exactly how many replacements to
+source. This guarantees `final_output.csv` only ever contains 5–100 firms.
+
+**`--limit` is a target, not a raw-firm cap.** With the vet gate on (default),
+`run_pipeline.py --limit N` keeps **sourcing + vetting in a loop until N firms
+pass the 5–100 gate**, then enriches them — so you ask for the number of
+*usable* firms you want, and the pipeline sources however many raw firms that
+takes (~70% get filtered, so it sources far more than N). Each round first vets
+any already-sourced-but-unvetted firms (cheap, reuses firms on hand) and only
+sources a fresh batch if still short. It stops when the target is met, when
+sourcing finds no new firms (printed clearly), or at `--max-source-rounds`.
+Tune the sourcing batch with `--source-batch` (default 100). `--no-vet` reverts
+`--limit` to its old meaning (raw firms pushed through, no gate).
+
+**Keeping the total at ~1,000 after replacements:**
+
+```bash
+# 1. Prune the current deliverable to in-range firms; out_of_range.csv is your
+#    replacement worklist, and the run prints how many to replace.
+python pipeline/04_score_and_export.py
+
+# 2. Refill: source + vet until 1,000 firms are in range, then enrich them.
+#    Already-in-range firms count toward the target, so this only sources the gap.
+python run_pipeline.py --limit 1000 --render fallback
+```
+
+(The vet gate is a cheap pre-filter; a firm can still fall out of 5–100 when
+Stage 2's full classification produces its final `est_attorneys`, so aim a bit
+above your target if you need the final count exact.)
 
 ### Stage 6: CMS vendor reverse-lookup (back-tracking)
 
@@ -179,7 +236,10 @@ afterward to refresh `final_output.csv`.
 | Flag | Effect |
 |---|---|
 | `--dry-run` | Zero API calls anywhere, mock data, validates wiring |
-| `--limit N` | Caps how many firms go through the *entire* pipeline per run |
+| `--limit N` | **Target** number of in-range (5–100 attorney) firms to end up with — the pipeline sources + vets until N firms pass the gate, then enriches them. With `--no-vet` it reverts to a raw-firm cap. |
+| `--source-batch N` | New firms to source per round while chasing the `--limit` target (default 100). Larger = fewer Google Places re-scans. |
+| `--max-source-rounds N` | Safety cap on sourcing rounds (default 40); the loop also stops on its own when sourcing finds nothing new. |
+| `--no-vet` | Skips the Stage 1b attorney-headcount gate. By default every sourced firm is vetted to 5–100 attorneys before any paid enrichment, and Stage 2 only processes firms that pass — so leaving the gate on *saves* money on out-of-range firms. |
 | `--skip-exa` | Stage 2 skips Exa search (the priciest per-firm signal); relies on free site fingerprinting only |
 | `--skip-contacts` | Skips Stage 3 (decision-maker lookup) entirely |
 | `--render {off,fallback,always}` | Stage 2 headless-browser fallback for JS-rendered sites (requires the optional render extra). `fallback` renders only low-signal firms; adds a few minutes per ~200-firm batch. Default `off`. |
@@ -271,9 +331,14 @@ If Stage 1 returns fewer firms than expected, options in rough order of effort:
 
 ## Output
 
-- `data/final_output.csv` — main deliverable, sorted Hot → Warm → Cold/Unknown
+- `data/final_output.csv` — main deliverable, **only firms with 5–100 attorneys**,
+  sorted Hot → Warm → Cold/Unknown
+- `data/out_of_range.csv` — firms excluded from the deliverable because their
+  estimated attorney count fell outside 5–100; this is your replacement worklist
+  (Stage 4 prints how many)
+- `data/firms_vetted.csv` — Stage 1b headcount-vet results for every sourced
+  firm (`est_attorneys` + `vet_status`: pass / fail_low / fail_high)
 - `data/bonus.csv` — reserved for firms outside a size target that still scored Hot/Warm
-  (currently empty since Google Places doesn't provide headcount data)
 - `data/firms_raw.csv`, `data/cms_results.csv`, `data/contacts.csv` —
   intermediate per-stage data, kept so you can audit any single firm's evidence
   trail without rerunning anything (`contacts.csv` now carries `decision_maker_email`)
