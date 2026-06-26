@@ -185,6 +185,89 @@ EMAIL_SCRAPE_DENYLIST_DOMAINS = {
     "fontawesome.com", "cloudflareinsights.com", "ggpht.com", "sentry-next.wixpress.com",
 }
 
+# --- CMS vendor reverse-lookup (Stage 6: vendor backlinks) -----------------
+# CMS vendors publish their own customers / testimonials / case studies. If one
+# of our sourced firms shows up on a vendor's customer page — either as an
+# outbound link to (or plain-text mention of) the firm's domain (strongest), or
+# by firm name (weaker) — that's high-quality evidence the firm runs that CMS.
+# Stage 6 scrapes these pages and back-tracks the mentions onto our firm list.
+# Pure scraping, no APIs.
+CMS_VENDOR_HOMEPAGES = {
+    "CloudLex": "https://www.cloudlex.com",
+    "Filevine": "https://www.filevine.com",
+    "Litify": "https://www.litify.com",
+    "SmartAdvocate": "https://www.smartadvocate.com",
+    "CASEpeer": "https://www.casepeer.com",
+}
+
+# Best-known direct customer-story / testimonial / case-study paths per vendor,
+# fetched directly in addition to any pages discovered by crawling one hop from
+# the homepage. A 404 here is harmless (it's just skipped). Update as vendor
+# sites move these pages around.
+CMS_VENDOR_SEED_PATHS = {
+    "CloudLex": ["/testimonials/", "/case-studies/", "/customers/", "/reviews/"],
+    "Filevine": ["/customers/", "/case-studies/", "/testimonials/", "/reviews/"],
+    "Litify": ["/customers/", "/case-studies/", "/customer-stories/"],
+    "SmartAdvocate": ["/testimonials/", "/case-studies/", "/clients/", "/reviews/"],
+    "CASEpeer": ["/testimonials/", "/case-studies/", "/customers/", "/reviews/"],
+}
+
+# Anchor-text / href fragments that signal a customer-story / testimonial /
+# case-study page. Stage 6 follows same-domain links matching any of these one
+# hop from each vendor homepage, so discovery adapts when vendors relocate
+# these pages. Matched against link href and visible text (lowercased).
+CMS_VENDOR_PAGE_HINTS = [
+    "testimonial", "customer", "case-study", "case-studies", "casestudies",
+    "case study", "success-story", "success-stories", "success story",
+    "client-story", "client-stories", "customer-story", "customer-stories",
+    "review", "results", "who-we-serve", "clients",
+]
+
+# Polite ceiling on vendor pages fetched per vendor (homepage + seeds +
+# discovered links), so a vendor that links hundreds of individual stories
+# doesn't balloon a single run.
+CMS_VENDOR_MAX_PAGES = 40
+
+# Tokens stripped from a firm name before name-matching it against vendor page
+# text, leaving the distinctive (usually surname) core. Lowercased, punctuation
+# removed. Keeps name matching from firing on generic words every PI firm shares.
+FIRM_NAME_STOPWORDS = {
+    "law", "laws", "firm", "firms", "llc", "llp", "pllc", "pc", "pa", "ltd",
+    "co", "attorney", "attorneys", "lawyer", "lawyers", "associates", "associate",
+    "group", "office", "offices", "the", "and", "of", "a", "esq", "esquire",
+    "injury", "personal", "accident", "accidents", "trial", "legal", "justice",
+    "counsel", "partners", "plc", "p", "c", "l",
+}
+
+# Geographic + practice-area + marketing words that are NOT distinctive enough to
+# match a firm on a vendor page by themselves. A firm whose name core reduces to
+# only these (e.g. "PA Medical Malpractice Lawyers" -> "medical malpractice",
+# "New York Injury Law" -> "new york", "Win Big Law" -> "win big") is skipped for
+# name matching, because the core appears in generic page text everywhere. The
+# full core is still used as the search phrase — these only gate whether a name
+# match is distinctive enough to trust (firm-surname firms are unaffected).
+FIRM_NAME_GENERIC_TOKENS = {
+    # geography (our target states + their metros/boroughs + common qualifiers)
+    "new", "york", "jersey", "pennsylvania", "connecticut", "philadelphia",
+    "philly", "pittsburgh", "newark", "brooklyn", "bronx", "manhattan", "queens",
+    "staten", "island", "long", "hartford", "harrisburg", "allentown", "scranton",
+    "buffalo", "rochester", "syracuse", "albany", "trenton", "camden", "stamford",
+    "bridgeport", "haven", "city", "county", "state", "metro", "tri", "valley",
+    "american", "america", "national", "northeast", "eastern", "western",
+    "central", "downtown", "uptown", "greater", "regional",
+    # practice areas / case types
+    "medical", "malpractice", "car", "auto", "truck", "motorcycle", "vehicle",
+    "motor", "pedestrian", "bicycle", "slip", "fall", "premises", "liability",
+    "construction", "wrongful", "death", "nursing", "abuse", "dog", "bite",
+    "brain", "spinal", "burn", "workers", "compensation", "comp", "disability",
+    "mass", "tort", "products", "product", "defective", "rideshare", "uber",
+    "lyft", "rideshare", "catastrophic", "victims", "victim", "claims", "claim",
+    # marketing / superlatives
+    "win", "big", "best", "top", "super", "elite", "premier", "trusted", "strong",
+    "fighter", "fighters", "hero", "heroes", "champion", "champions", "results",
+    "winning", "aggressive", "fierce", "serious", "help", "helpline", "now",
+}
+
 # Job titles that signal the intake/records/case-manager hiring pattern
 # called out in the brief as the most reliable CMS-detection signal.
 HIRING_SIGNAL_TITLES = [

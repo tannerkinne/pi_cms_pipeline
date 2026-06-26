@@ -58,6 +58,14 @@ def main():
                         help="Disable Stage 3's contact-scrape rendering, which is ON by default "
                              "(fallback mode — renders only JS/empty team pages). Use this to run "
                              "Stage 3 static-only.")
+    parser.add_argument("--vendor-backlinks", action="store_true",
+                        help="Before Stage 4, scrape the CMS vendors' own customer / testimonial "
+                             "pages and back-track any of our firms found there into cms_results "
+                             "(fills Unknown firms). Pure scraping, no API cost. Add "
+                             "--include-vendor-names to also apply weaker name-only matches.")
+    parser.add_argument("--include-vendor-names", action="store_true",
+                        help="With --vendor-backlinks, also apply name-only vendor matches "
+                             "(Medium confidence), not just domain matches.")
     parser.add_argument("--to-sheets", action="store_true",
                         help="After Stage 4, also push final_output.csv / bonus.csv to a "
                              "Google Sheet (requires the optional sheets extra plus "
@@ -92,6 +100,15 @@ def main():
         if args.no_render and not args.dry_run:
             stage3_args += ["--render", "off"]
         run_stage("03_enrich_contacts.py", stage3_args)
+
+    # Optional reverse-lookup: patch cms_results from CMS vendor customer pages
+    # BEFORE Stage 4 so any newly-detected firms flow into final_output. Pure
+    # scraping; skipped under --dry-run (it hits live vendor sites).
+    if args.vendor_backlinks and not args.dry_run:
+        stage6_args = ["--apply"]
+        if args.include_vendor_names:
+            stage6_args.append("--include-names")
+        run_stage("06_vendor_backlinks.py", stage6_args)
 
     run_stage("04_score_and_export.py", [])
 

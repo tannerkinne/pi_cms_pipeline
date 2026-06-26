@@ -139,6 +139,41 @@ python pipeline/03_enrich_contacts.py --limit 20
 python pipeline/04_score_and_export.py
 ```
 
+### Stage 6: CMS vendor reverse-lookup (back-tracking)
+
+Detection runs the *other* direction too. Instead of only asking each firm's site
+what CMS it runs, Stage 6 asks each **CMS vendor's** marketing site which firms it
+brags about. Vendors (Filevine, CloudLex, Litify, SmartAdvocate, CASEpeer) publish
+customer lists, testimonials and case studies; if one of our sourced firms shows up
+there it's strong third-party evidence the firm runs that CMS. Pure scraping — **no
+API cost**.
+
+Two match types, strongest first:
+- **`domain_match`** (High) — the firm's domain appears on a vendor page, as an
+  outbound "visit website" link or plain text. Unambiguous.
+- **`name_mention`** (Medium) — the firm's distinctive name core (surnames, with
+  generic "law/firm/associates"-type words stripped) appears in a vendor page's
+  visible text.
+
+```bash
+# Scrape + write a report only (data/vendor_mentions.csv); changes nothing else:
+python pipeline/06_vendor_backlinks.py
+
+# Back-track matches into cms_results.csv (fills firms still 'Unknown'):
+python pipeline/06_vendor_backlinks.py --apply                  # domain matches only
+python pipeline/06_vendor_backlinks.py --apply --include-names  # + name matches
+
+# Or fold it into a full run (runs before Stage 4 so promotions reach final_output):
+python run_pipeline.py --limit 200 --vendor-backlinks
+```
+
+`--apply` backs `cms_results.csv` up to `cms_results.bak.csv` first, only fills
+firms currently classified `Unknown` (a firm already on a *different* CMS is left
+alone unless you pass `--overwrite-detected`), and tags each patched row's evidence
+with the vendor page it was found on. JS-heavy vendor pages are rendered with the
+same headless fallback as Stages 2/3 (`--render off` to disable). Re-run Stage 4
+afterward to refresh `final_output.csv`.
+
 ## Cost-control knobs
 
 | Flag | Effect |
@@ -148,6 +183,7 @@ python pipeline/04_score_and_export.py
 | `--skip-exa` | Stage 2 skips Exa search (the priciest per-firm signal); relies on free site fingerprinting only |
 | `--skip-contacts` | Skips Stage 3 (decision-maker lookup) entirely |
 | `--render {off,fallback,always}` | Stage 2 headless-browser fallback for JS-rendered sites (requires the optional render extra). `fallback` renders only low-signal firms; adds a few minutes per ~200-firm batch. Default `off`. |
+| `--vendor-backlinks` | Runs Stage 6 (CMS vendor reverse-lookup) before Stage 4 and back-tracks any of our firms found on vendor customer pages into `cms_results`. Free (scraping only). Add `--include-vendor-names` for weaker name-only matches. |
 
 **Realistic per-run cost** at 200 firms:
 - Stage 1 (Google Places): ~$2–3 total (billed per API call, not per firm; ~140 calls across 4 states × 7 queries)
@@ -243,6 +279,9 @@ If Stage 1 returns fewer firms than expected, options in rough order of effort:
   trail without rerunning anything (`contacts.csv` now carries `decision_maker_email`)
 - `data/api_usage.csv` — one row per API call with tokens/credits/results and
   estimated cost; read it with `scripts/cost_report.py`
+- `data/vendor_mentions.csv` — Stage 6 reverse-lookup report: every firm of ours
+  found on a CMS vendor's customer/testimonial page, with match type and the
+  vendor page it appeared on (written even without `--apply`)
 
 Import `final_output.csv` into Airtable/Sheets — this pipeline produces the CSV;
 it doesn't push to Airtable directly. (Easy to add later via Airtable's API.)
