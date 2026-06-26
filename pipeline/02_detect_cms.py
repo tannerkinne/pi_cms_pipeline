@@ -30,8 +30,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import site_fingerprint
 from api_wrappers import claude_classifier, exa_client, cost_tracker
+from config import ATTORNEY_MIN_COUNT
 from utils import (DATA_DIR, read_csv_rows, append_csv_row, write_csv_rows,
                    already_processed_keys, CallCounter)
+
+# site_errors substrings that mean the previous fetch was BLOCKED rather than the
+# firm genuinely having no such page — i.e. a re-fetch with the new browser UA +
+# render could change the outcome. (A plain 404 on a subpath is normal and absent.)
+_BLOCK_ERROR_HINTS = ("403", "Timeout", "timeout", "SSLError", "ConnectionError", "TooManyRedirects")
 
 RAW_INPUT_PATH = os.path.join(DATA_DIR, "firms_raw.csv")
 VETTED_INPUT_PATH = os.path.join(DATA_DIR, "firms_vetted.csv")
@@ -106,11 +112,25 @@ def main():
                         help="Comma-separated domains to (re)detect — overwrites just those rows "
                              "and ignores --limit. Useful to re-run a specific batch (e.g. firms "
                              "detected while an API was down).")
+    parser.add_argument("--refetch-unreachable", action="store_true",
+                        help="Backfill: reprocess firms whose PREVIOUS fetch failed (HTTP 403 / "
+                             "timeout / SSL) and so came back with est_attorneys <5 — these are "
+                             "false zeros from a blocked fetch, not real solo firms (e.g. Cellino). "
+                             "Re-runs them with the new browser UA + render fallback, overwriting "
+                             "their rows. Respects --limit (batch with a high value). Add "
+                             "--include-partial to also retry firms that fetched some pages but hit "
+                             "a block error on others.")
+    parser.add_argument("--include-partial", action="store_true",
+                        help="With --refetch-unreachable, also retry est<5 firms that DID fetch some "
+                             "pages but logged a 403/timeout/SSL error on others (partial undercounts), "
+                             "not just the firms that fetched zero pages.")
     args = parser.parse_args()
 
     os.makedirs(DATA_DIR, exist_ok=True)
     cost_tracker.set_context(stage="02")
-    firms = _load_input_firms()
+    # Backfill mode works over the full sourced universe (firms_raw), independent
+    # of the vet filter, so it can recover any firm previously dropped on a bad fetch.
+    firms = read_csv_rows(RAW_INPUT_PATH) if args.refetch_unreachable else _load_input_firms()
     if not firms:
         print(f"No input firms found — run Stage 1 (and Stage 1b vet) first.")
         return
@@ -145,6 +165,39 @@ def main():
         write_csv_rows(OUTPUT_PATH, retained, FIELDNAMES, mode="w")
         print(f"Stage 2 [rerender-unknowns]: reprocessing {len(todo)} Unknown firms "
               f"with render='{render_mode}' (overwriting their rows).")
+    elif args.refetch_unreachable:
+        # Backfill the false zeros: firms whose previous fetch was blocked/timed
+        # out (so est_attorneys came back <5) get re-run with the new browser UA +
+        # render, overwriting their rows. Render on by default here — it's the
+        # whole point (it's what gets past JS-challenge WAFs like Cellino's).
+        if render_mode == "off":
+            render_mode = "fallback"
+        existing = read_csv_rows(OUTPUT_PATH)
+
+        def _was_blocked(r):
+            try:
+                n = int(float(r.get("est_attorneys", "")))
+            except (TypeError, ValueError):
+                n = 0
+            if n >= ATTORNEY_MIN_COUNT:
+                return False  # already counted as mid-size+; nothing to recover
+            pages = (r.get("site_pages_checked", "") or "").strip()
+            errs = r.get("site_errors", "") or ""
+            if not pages:
+                return True  # zero pages fetched — the clearest false zero
+            if args.include_partial and any(h in errs for h in _BLOCK_ERROR_HINTS):
+                return True  # fetched some pages but a block error undercut the count
+            return False
+
+        target_domains = {r["domain"] for r in existing if _was_blocked(r)}
+        todo = [f for f in firms if f["domain"] in target_domains][: args.limit]
+        todo_domains = {f["domain"] for f in todo}
+        retained = [r for r in existing if r["domain"] not in todo_domains]
+        write_csv_rows(OUTPUT_PATH, retained, FIELDNAMES, mode="w")
+        scope = "zero-page + partial-block" if args.include_partial else "zero-page"
+        print(f"Stage 2 [refetch-unreachable]: re-running {len(todo)} of "
+              f"{len(target_domains)} blocked firms ({scope}) with render='{render_mode}' "
+              f"(overwriting their rows). Raise --limit to do more per batch.")
     else:
         done_domains = already_processed_keys(OUTPUT_PATH, "domain")
         todo = [f for f in firms if f["domain"] not in done_domains][: args.limit]
