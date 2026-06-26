@@ -158,10 +158,23 @@ Stage 1b moves that check to the front, before any paid call:
    — a fraction of a full classification).
 
 Firms are written to `data/firms_vetted.csv` with `vet_status` of `pass`,
-`fail_low` (<5), or `fail_high` (>100). **Stage 2 then processes only the
-`pass` firms**, so Exa + classification + contact lookup never run on
-out-of-range firms. The gate runs automatically in `run_pipeline.py`; disable
-with `--no-vet`.
+`fail_low` (<5), `fail_high` (>100), or **`unknown`**. **Stage 2 processes
+`pass` and `unknown` firms** (Exa + classification + contact lookup never run on
+the confidently out-of-range `fail_*` firms). The gate runs automatically in
+`run_pipeline.py`; disable with `--no-vet`.
+
+**`unknown` = "we couldn't read the site," not "too small."** Big firms are
+exactly the ones that run WAFs (Cloudflare etc.) or slow/JS-walled sites — a
+bare fetch gets HTTP 403 / times out and returns no attorney content, which used
+to score them `est_attorneys=0` and drop them as solo shops (e.g. Cellino Law:
+35 attorneys, hard-403'd → wrongly dropped). Now the fetch uses a real
+browser User-Agent + headers, the vet renders blocked/low-signal team pages via
+headless Chromium (which gets past most JS challenges — it recovers Cellino's
+full 35-attorney roster), and any firm we *still* can't read is marked `unknown`
+rather than `fail_low`. Unknowns ride through to Stage 2's fuller estimate (Exa
+web search can find "team of N attorneys" even when the site is blocked), and
+Stage 4's authoritative 5–100 filter makes the final call — so a blocked firm
+gets a real evaluation instead of being thrown away on a failed request.
 
 As a backstop, **Stage 4 enforces the same 5–100 band authoritatively** on the
 final `est_attorneys` from classification: in-range firms go to

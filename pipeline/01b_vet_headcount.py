@@ -48,12 +48,29 @@ FIELDNAMES = [
 ]
 
 
-def _classify_status(n: int) -> str:
-    if n < ATTORNEY_MIN_COUNT:
-        return "fail_low"
+def _classify_status(n: int, has_evidence: bool) -> str:
+    """Map an estimate to a gate decision.
+
+    Crucially, an estimate of <MIN means 'too small' ONLY when we actually read
+    some firm content (a team page, attorney names, or homepage text). If the
+    fetch came back empty — the site blocked us, timed out, or is JS-walled — a 0
+    is a *false* zero, not a real solo shop, so we mark it 'unknown' instead of
+    'fail_low'. Unknown firms are NOT dropped: Stage 2 still enriches them (with
+    a real browser UA, render fallback, and Exa web search) to get a true count.
+    This is what stops big firms like Celino from being thrown out on a failed
+    fetch. See [[stage1b-unreachable-not-too-small]]."""
     if n > ATTORNEY_MAX_COUNT:
         return "fail_high"
-    return "pass"
+    if ATTORNEY_MIN_COUNT <= n <= ATTORNEY_MAX_COUNT:
+        return "pass"
+    return "fail_low" if has_evidence else "unknown"
+
+
+def _has_readable_evidence(fingerprint: dict) -> bool:
+    """True if the fetch recovered ANY firm content to base a headcount on."""
+    return bool(fingerprint.get("attorney_names")) \
+        or bool((fingerprint.get("attorney_page_text") or "").strip()) \
+        or bool((fingerprint.get("homepage_text_snippet") or "").strip())
 
 
 def main():
@@ -95,7 +112,7 @@ def main():
         todo = [f for f in firms if f["domain"] not in done_domains][: args.limit]
         print(f"Stage 1b: vetting {len(todo)} firms ({len(done_domains)} already vetted, skipped).")
 
-    passed = fail_low = fail_high = 0
+    passed = fail_low = fail_high = unknown = 0
 
     for i, firm in enumerate(todo, 1):
         domain = firm["domain"]
@@ -105,6 +122,7 @@ def main():
 
         if args.dry_run:
             est = {"est_attorneys": 10, "basis": "dry-run mock estimate"}
+            has_evidence = True
             counter.tick("dry_run_mock_estimate", 1)
         else:
             fingerprint = site_fingerprint.fingerprint_site(domain, render=args.render)
@@ -112,17 +130,24 @@ def main():
                          len(fingerprint.get("pages_checked", [])) + len(fingerprint.get("errors", [])))
             if fingerprint.get("rendered"):
                 counter.tick("playwright_render", 1)
+            has_evidence = _has_readable_evidence(fingerprint)
             est = claude_classifier.estimate_headcount(firm_name, fingerprint)
             counter.tick("claude_headcount_estimate", 1)
 
         n = est["est_attorneys"]
-        status = _classify_status(n)
+        status = _classify_status(n, has_evidence)
         if status == "pass":
             passed += 1
         elif status == "fail_low":
             fail_low += 1
-        else:
+        elif status == "fail_high":
             fail_high += 1
+        else:
+            unknown += 1
+            if not est.get("basis"):
+                est["basis"] = ""
+            est["basis"] = ("site unreachable (blocked/timeout/JS-walled) — no content read; "
+                            "not rejected, sent to Stage 2 for a fuller estimate. " + est["basis"]).strip()
 
         append_csv_row(OUTPUT_PATH, {
             "place_id": firm.get("place_id", ""),
@@ -141,7 +166,8 @@ def main():
     print(f"\nStage 1b complete. Results in {OUTPUT_PATH}")
     print(f"  PASS (5-{ATTORNEY_MAX_COUNT}): {passed} | "
           f"fail_low (<{ATTORNEY_MIN_COUNT}): {fail_low} | "
-          f"fail_high (>{ATTORNEY_MAX_COUNT}): {fail_high}")
+          f"fail_high (>{ATTORNEY_MAX_COUNT}): {fail_high} | "
+          f"unknown (unreachable, sent to Stage 2): {unknown}")
     print(f"  API usage this run: {counter.summary()}")
     print(cost_tracker.session_summary("Stage 1b"))
     if args.dry_run:

@@ -45,11 +45,21 @@ def _load_input_firms():
     raw sourced list when no vet has been run yet (backward compatible)."""
     vetted = read_csv_rows(VETTED_INPUT_PATH)
     if vetted:
-        passing = [r for r in vetted if (r.get("vet_status") or "").strip() == "pass"]
-        skipped = len(vetted) - len(passing)
-        print(f"Stage 2: using {len(passing)} headcount-vetted firms (5-100 attorneys); "
-              f"{skipped} vetted firms outside range are excluded.")
-        return passing
+        # Process firms that passed the 5-100 gate PLUS 'unknown' firms — ones the
+        # cheap vet couldn't size because their site blocked us / timed out. We
+        # don't reject those on a failed fetch; Stage 2 gives them the full
+        # treatment (browser UA, render fallback, Exa web search) to get a real
+        # count, and Stage 4's authoritative est_attorneys filter makes the final
+        # call. Confidently-out-of-range firms (fail_low / fail_high) are excluded.
+        keep = {"pass", "unknown"}
+        proceed = [r for r in vetted if (r.get("vet_status") or "").strip() in keep]
+        npass = sum(1 for r in proceed if (r.get("vet_status") or "").strip() == "pass")
+        nunknown = len(proceed) - npass
+        excluded = len(vetted) - len(proceed)
+        print(f"Stage 2: processing {len(proceed)} vetted firms "
+              f"({npass} in-range + {nunknown} unknown/unreachable); "
+              f"{excluded} confidently out-of-range firms excluded.")
+        return proceed
     return read_csv_rows(RAW_INPUT_PATH)
 
 FIELDNAMES = [

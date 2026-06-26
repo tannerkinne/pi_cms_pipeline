@@ -315,9 +315,26 @@ def attorney_count_in_range(est_attorneys) -> bool:
 CLAUDE_MODEL = "claude-haiku-4-5-20251001"
 
 # --- Politeness / rate limiting for direct site fetches ---
-SITE_FETCH_TIMEOUT_SECONDS = 8
+# Timeout bumped to 15s: large firm sites (often the ones we most want — they
+# have the attorneys) are slower and were timing out at 8s, yielding a false
+# est_attorneys=0 that wrongly dropped them as "too small".
+SITE_FETCH_TIMEOUT_SECONDS = 15
 SITE_FETCH_DELAY_SECONDS = 1.0
-USER_AGENT = "Mozilla/5.0 (compatible; ResearchBot/1.0; +internal lead research)"
+# A realistic desktop-browser User-Agent. A bot-flavored UA gets HTTP 403'd by
+# the WAFs (Cloudflare etc.) that bigger firms run, so the fetch returned no
+# attorney content and the firm was undercounted to ~0. This alone doesn't beat
+# JS-challenge WAFs (those need the Playwright render fallback), but it recovers
+# the many sites that block on the UA string only.
+USER_AGENT = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+              "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+# Sent alongside the UA on every site fetch so requests look like a real browser
+# navigation, not a bare programmatic GET (another common block trigger).
+SITE_FETCH_HEADERS = {
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Upgrade-Insecure-Requests": "1",
+}
 
 # --- Apollo rate limiting ---
 # Politeness delay between successive Apollo API calls (people/match email

@@ -53,12 +53,16 @@ def _row_count(path):
         return max(0, sum(1 for _ in csv.reader(f)) - 1)
 
 
-def _passing_count(path):
-    """How many firms in firms_vetted.csv passed the 5-100 attorney gate."""
+def _vet_counts(path):
+    """(passing, processable) from firms_vetted.csv. passing = confirmed in 5-100;
+    processable = passing + 'unknown' (unreachable firms Stage 2 still enriches)."""
     if not os.path.exists(path):
-        return 0
+        return 0, 0
     with open(path, newline="", encoding="utf-8") as f:
-        return sum(1 for r in csv.DictReader(f) if (r.get("vet_status") or "").strip() == "pass")
+        statuses = [(r.get("vet_status") or "").strip() for r in csv.DictReader(f)]
+    passing = sum(1 for s in statuses if s == "pass")
+    processable = passing + sum(1 for s in statuses if s == "unknown")
+    return passing, processable
 
 
 def main():
@@ -139,8 +143,8 @@ def main():
             unvetted = _row_count(FIRMS_RAW_PATH) - _row_count(FIRMS_VETTED_PATH)
             if unvetted > 0:
                 run_stage("01b_vet_headcount.py", ["--limit", str(unvetted)] + render_pass)
-            passing = _passing_count(FIRMS_VETTED_PATH)
-            print(f"\n  -> {passing}/{target} firms in the 5-100 range so far "
+            passing, _ = _vet_counts(FIRMS_VETTED_PATH)
+            print(f"\n  -> {passing}/{target} firms confirmed in the 5-100 range so far "
                   f"(round {rounds}).", flush=True)
             if passing >= target:
                 break
@@ -156,9 +160,11 @@ def main():
                       f"{passing}/{target} in range.\n    Widen sourcing coverage (see README "
                       f"'Tuning firm sourcing coverage') to reach a higher target.", flush=True)
                 break
-        # Enrich every passing firm not already done (resumable); the pass count is
-        # a safe upper bound on how many Stage 2/3 still need to process.
-        process_limit = _passing_count(FIRMS_VETTED_PATH)
+        # Enrich every passing + unknown firm not already done (resumable); that
+        # count is a safe upper bound on how many Stage 2/3 still need to process.
+        # Unknowns are unreachable firms we won't reject on a failed fetch — Stage 2
+        # gives them a real estimate, then Stage 4 makes the final 5-100 call.
+        _, process_limit = _vet_counts(FIRMS_VETTED_PATH)
 
     stage2_args = ["--limit", str(process_limit)] + dry
     if args.skip_exa:

@@ -28,7 +28,12 @@ from config import (
     SITE_FETCH_TIMEOUT_SECONDS,
     SITE_FETCH_DELAY_SECONDS,
     USER_AGENT,
+    SITE_FETCH_HEADERS,
 )
+
+# Browser-like header set sent on every direct fetch (see config). Built once so
+# all three request sites stay in sync.
+_REQUEST_HEADERS = {"User-Agent": USER_AGENT, **SITE_FETCH_HEADERS}
 
 
 def _normalize_domain(domain: str) -> str:
@@ -371,7 +376,7 @@ def _follow_links(links: list, hits: dict, pages_checked: list, errors: list, ta
         try:
             resp = requests.get(
                 url,
-                headers={"User-Agent": USER_AGENT},
+                headers=_REQUEST_HEADERS,
                 timeout=SITE_FETCH_TIMEOUT_SECONDS,
                 allow_redirects=True,
             )
@@ -424,7 +429,7 @@ def _scrape_attorney_pages(domain: str) -> dict:
         try:
             resp = requests.get(
                 url,
-                headers={"User-Agent": USER_AGENT},
+                headers=_REQUEST_HEADERS,
                 timeout=SITE_FETCH_TIMEOUT_SECONDS,
             )
             if resp.status_code < 400:
@@ -515,7 +520,7 @@ def fingerprint_site(domain: str, render: str = "off") -> dict:
         try:
             resp = requests.get(
                 url,
-                headers={"User-Agent": USER_AGENT},
+                headers=_REQUEST_HEADERS,
                 timeout=SITE_FETCH_TIMEOUT_SECONDS,
             )
             if resp.status_code >= 400:
